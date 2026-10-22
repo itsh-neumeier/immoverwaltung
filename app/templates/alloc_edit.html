@@ -48,6 +48,9 @@
   </div>
   {% endfor %}
   <p class="muted" data-key="percent">Summe: <b id="psum">–</b></p>
+  <div class="check"><input type="checkbox" name="reserve" id="rs" {% if a.reserve %}checked{% endif %}><label for="rs" style="margin:0">Rücklage bilden – wird zeitversetzt bezahlt (z. B. Wassergeld, IPTV, Kaminkehrer)</label></div>
+  <label>Zweck im Verwendungszweck der Rücklage (optional)</label>
+  <input type="text" name="reserve_label" maxlength="60" value="{{ a.reserve_label or '' }}" placeholder="z. B. WASSERGELD – leer = Bezeichnung">
   <div class="check"><input type="checkbox" name="active" id="a" {% if a.active %}checked{% endif %}><label for="a" style="margin:0">aktiv</label></div>
   <button>Speichern</button>
   {% if aid %}<button class="danger" name="delete" value="1" onclick="return confirm('Löschen?')">Löschen</button>{% endif %}

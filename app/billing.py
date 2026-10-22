@@ -51,6 +51,7 @@ class FixedCostCfg:
     name: str
     amount_gross: float
     party_ids: list[int] = field(default_factory=list)  # leer = alle Parteien
+    id: int = 0
 
 
 @dataclass
@@ -109,6 +110,7 @@ class Line:
     note: str = ""
     vat_included: bool = False  # nur Posten der Lieferantenrechnung (Netzstrom, Fixkosten) enthalten MwSt.
     group: str = "strom"  # strom | fix | umlage – Gliederung der Abrechnung
+    ref: str = ""  # Herkunft: fc:<id> (Fixkosten) bzw. al:<id> (Umlage) – für Rücklagen
 
     def as_dict(self) -> dict:
         return {
@@ -120,6 +122,7 @@ class Line:
             "note": self.note,
             "vat_included": self.vat_included,
             "group": self.group,
+            "ref": self.ref,
         }
 
 
@@ -359,7 +362,7 @@ def compute(
             continue
         for p, part in zip(targets, _split_equal(fc.amount_gross, len(targets))):
             note = f"{_de(fc.amount_gross)} € / {len(targets)} Parteien" if len(targets) > 1 else ""
-            lines[p.id].append(Line(fc.name, part, note=note, group="fix"))
+            lines[p.id].append(Line(fc.name, part, note=note, group="fix", ref=f"fc:{fc.id}" if fc.id else ""))
 
     # --- Umlagen -----------------------------------------------------------------
     for a in allocations:
@@ -419,7 +422,7 @@ def compute(
             if pot_owner is not None and p.id == owner.id:
                 amount = pot_owner * frac
                 note += f" – Eigentümer: nur Netzanteil {_de(pot_owner)} €"
-            lines[p.id].append(Line(a.name, _r(amount), note=note, group="umlage"))
+            lines[p.id].append(Line(a.name, _r(amount), note=note, group="umlage", ref=f"al:{a.id}" if a.id else ""))
 
     # --- Ergebnis ----------------------------------------------------------------
     result_parties = []

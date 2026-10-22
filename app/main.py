@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import accounts, api, auth, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
+from . import accounts, api, auth, reserves, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
 from .config import config
 from .db import (Allocation, Billing, Building, FixedCost, IgnoredInvoice, Party, User, SessionLocal, get_session, get_settings,
                  init_db, save_settings)
@@ -63,6 +63,7 @@ app = FastAPI(title="ImmoVerwaltung", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 app.include_router(accounts.router)
 app.include_router(api.router)
+app.include_router(reserves.router)
 
 
 # --------------------------------------------------------------------------- Helfer
@@ -827,6 +828,8 @@ async def fixed_save(request: Request, cid: int, s: Session = Depends(get_sessio
     c.amount_gross = parse_float(form.get("amount_gross")) or 0.0
     c.party_ids = [int(x) for x in form.getlist("party_ids")]
     c.active = bool(form.get("active"))
+    c.reserve = bool(form.get("reserve"))
+    c.reserve_label = " ".join(str(form.get("reserve_label", "")).split())[:60]
     if cid == 0:
         s.add(c)
     s.commit()
@@ -874,6 +877,8 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
             if raw:
                 key[str(p.id)] = raw
     a.key = key
+    a.reserve = bool(form.get("reserve"))
+    a.reserve_label = " ".join(str(form.get("reserve_label", "")).split())[:60]
     a.active = bool(form.get("active"))
     if aid == 0:
         s.add(a)

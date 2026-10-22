@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block title %}Rücklagen{% endblock %}
+{% block content %}
+<h1>Rücklagen</h1>
+<p class="muted">Für Kosten, die die Mieter monatlich zahlen, deren Rechnung aber erst später kommt (z. B. Wassergeld, IPTV,
+Kaminkehrer): je abgeschlossener Abrechnung, Partei und Position eine Überweisung vom Girokonto aufs Rücklagenkonto –
+als <b>SEPA-Datei</b> zum Hochladen im Online-Banking („Datei-Übergabe“).</p>
+
+{% if buildings|length > 1 %}
+<form method="get" class="card"><label>Gebäude</label>
+  <select name="building" onchange="this.form.submit()">
+  {% for b in buildings %}<option value="{{ b.id }}" {% if b.id == bld.id %}selected{% endif %}>{{ b.label }}</option>{% endfor %}
+  </select></form>
+{% endif %}
+
+{% if dl %}
+<div class="card" style="border:2px solid #16a34a">
+  <b>📄 SEPA-Datei bereit.</b> Der Download startet automatisch –
+  sonst <a href="/admin/reserves/export/{{ dl }}.xml" id="dl-link">hier herunterladen</a>. Im Online-Banking:
+  „Datei-Übergabe“ → Datei wählen → Summen und Ausführungsdatum prüfen → freigeben.
+</div>
+<script>setTimeout(() => { location.href = "/admin/reserves/export/{{ dl }}.xml"; }, 300);</script>
+{% endif %}
+
+{% if not positions %}
+<div class="warn">Noch keine Position als Rücklage markiert. Unter <a href="/admin/costs">Fixkosten &amp; Umlagen</a> bei
+z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</b> setzen.</div>
+{% endif %}
+{% if problems %}
+<div class="warn">Konten unvollständig: {{ problems|join(' · ') }} – unten unter „Konten“ eintragen.</div>
+{% endif %}
+
+{% if problems %}<details class="card" {% if problems %}open{% endif %}>
+  <summary><b>🏦 Konten</b> <span class="muted">Hauptkonto {{ fmt_iban(bld.account_iban) or "–" }} → Rücklagenkonto {{ fmt_iban(bld.reserve_iban) or "–" }}</span></summary>
+  <p class="muted">Kontoinhaber genau so eintragen, wie er bei der Bank geführt wird – die Bank prüft beim Hochladen, ob
+  Name und IBAN zusammenpassen (Empfängerprüfung).</p>
+  <form method="post" action="/admin/reserves/accounts">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <h3>Hauptkonto / Girokonto</h3>
+    <div class="grid">
+      <div><label>Kontoinhaber</label><input type="text" name="account_name" maxlength="70" value="{{ bld.account_name }}"></div>
+      <div><label>IBAN</label><input type="text" name="account_iban" value="{{ fmt_iban(bld.account_iban) }}" placeholder="DE.. .... .... .... .... .."></div>
+      <div><label>BIC (optional)</label><input type="text" name="account_bic" maxlength="11" value="{{ bld.account_bic }}"></div>
+    </div>
+    <h3>Rücklagenkonto</h3>
+    <div class="grid">
+      <div><label>Kontoinhaber</label><input type="text" name="reserve_name" maxlength="70" value="{{ bld.reserve_name }}"></div>
+      <div><label>IBAN</label><input type="text" name="reserve_iban" value="{{ fmt_iban(bld.reserve_iban) }}"></div>
+      <div><label>BIC (optional)</label><input type="text" name="reserve_bic" maxlength="11" value="{{ bld.reserve_bic }}"></div>
+    </div>
+    <div class="grid">
+      <div><label>Rücklagen ab Abrechnungsmonat</label><input type="month" name="reserve_start" value="{{ bld.reserve_start }}">
+        <p class="muted" style="margin:4px 0 0">Ältere Abrechnungen werden ignoriert (leer = alle).</p></div>
+      <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <button>Konten speichern</button>
+  </form>
+</details>{% endif %}
+<h2>Rücklagenkonto (virtuell)</h2>
+<div class="card">
+  <div class="muted">Stand laut bestätigten Buchungen</div>
+  <div style="font-size:1.8rem;font-weight:700">{{ balances|sum(attribute='total')|eur }}</div>
+  {% set pl_in = balances|sum(attribute='planned_in') %}{% set pl_out = balances|sum(attribute='planned_out') %}
+  {% if pl_in or pl_out %}<div class="muted">vorgemerkt (Datei noch nicht als ausgeführt bestätigt):
+    {% if pl_in %}+{{ pl_in|eur }}{% endif %} {% if pl_out %}{{ pl_out|eur }}{% endif %}</div>{% endif %}
+  <div class="scroll" style="margin-top:10px"><table>
+    <tr><th>Position</th><th class="r">Zuführungen</th><th class="r">Auszahlungen</th><th class="r">Stand</th><th class="r">vorgemerkt</th></tr>
+    {% for r in balances %}
+    <tr><td>{{ r.name }}</td><td class="r">{{ r['in']|eur }}</td><td class="r">{{ (-r['out'] if r['out'] else 0)|eur }}</td>
+      <td class="r"><b>{{ r.total|eur }}</b></td>
+      <td class="r muted">{% if r.planned_in %}+{{ r.planned_in|eur }}{% endif %} {% if r.planned_out %}{{ r.planned_out|eur }}{% endif %}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">Noch keine Buchungen.</td></tr>{% endfor %}
+  </table></div>
+</div>
+
+<h2>Offene Rücklagen</h2>
+<form method="post" action="/admin/reserves/export" class="card">
+  <input type="hidden" name="building" value="{{ bld.id }}">
+  {% if items %}
+  <div class="scroll"><table>
+    <tr><th><input type="checkbox" checked aria-label="alle" onclick="document.querySelectorAll('.rl-item').forEach(c => c.checked = this.checked); rlSum()"></th>
+      <th>Monat</th><th>Partei</th><th>Position</th><th class="r">Betrag</th><th>Verwendungszweck</th></tr>
+    {% for i in items %}
+    <tr>
+      <td><input type="checkbox" class="rl-item" name="items" value="{{ i.key }}" data-amount="{{ i.amount }}" checked onchange="rlSum()"></td>
+      <td><a href="/admin/billings/{{ i.billing.id }}">{{ i.billing.period_start.strftime('%m/%Y') }}</a></td>
+      <td>{{ i.party.name }}{% if i.party.unit_id %} <span class="muted">({{ i.party.unit_id }})</span>{% endif %}</td>
+      <td>{{ i.pos.name }}</td>
+      <td class="r">{{ i.amount|eur }}</td>
+      <td><code style="font-size:11px">{{ i.purpose }}</code></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Ausführungsdatum</label><input type="date" name="exec_date" value="{{ exec_date.isoformat() }}" min="{{ today.isoformat() }}">
+      <p class="muted" style="margin:4px 0 0">Vorschlag: spätestes Zahlungsziel der Mieter, frühestens nächster Bankarbeitstag.</p></div>
+    <div><label>Summe</label><div style="font-size:1.4rem;font-weight:700" id="rl-sum">{{ total|eur }}</div>
+      <span class="muted" id="rl-count">{{ items|length }} Überweisung(en)</span></div>
+  </div>
+  <button {% if problems %}disabled title="Erst Konten eintragen"{% endif %}>📄 SEPA-Datei erzeugen</button>
+  <p class="muted">Eine Sammelüberweisung (eine logische Datei) im Format {{ bld.sepa_format }}; Dateiname nur mit erlaubten
+  Zeichen. Nach dem Hochladen und der Ausführung unten bei „SEPA-Dateien“ <b>✓ Ausgeführt</b> bestätigen – erst dann zählt der
+  Betrag im Rücklagenkonto. Wird die Datei abgelehnt: „Verwerfen“, die Posten sind dann wieder offen.</p>
+  {% else %}<p class="muted">Keine offenen Beträge – alle abgeschlossenen Abrechnungen sind zurückgelegt.</p>{% endif %}
+</form>
+
+
+
+
+
+
+
+
+
+<div class="card" id="auszahlung">
+  <h2 style="margin-top:0">💶 Rechnung fällig – Auszahlung aufs Hauptkonto</h2>
+  <p class="muted">Z. B. Wasserabrechnung ist da: Position wählen, Betrag eintragen → SEPA-Gutschrift vom Rücklagenkonto aufs
+  Hauptkonto. Nach Ausführung im Online-Banking unten bestätigen.</p>
+  <form method="post" action="/admin/reserves/entry">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <div class="grid">
+      <div><label>Position</label><select name="ref" required id="rl-ref" onchange="rlPrefill()">
+        {% for r in balances %}<option value="{{ r.ref }}" data-total="{{ '%.2f'|format(r.total) }}">{{ r.name }} – Stand {{ r.total|eur }}</option>{% endfor %}</select></div>
+      <div><label>Betrag (€)</label><input type="text" name="amount" id="rl-amount" inputmode="decimal" placeholder="412,30" required></div>
+      <div><label>Ausführung am</label><input type="date" name="booking_date" value="{{ today.isoformat() }}"></div>
+    </div>
+    <label>Notiz / Rechnung</label><input type="text" name="note" maxlength="80" placeholder="z. B. Wasserabrechnung 2026">
+    <div class="check"><input type="checkbox" name="sepa" id="rl-sepa" checked><label for="rl-sepa" style="margin:0">SEPA-Gutschrift aufs Hauptkonto erzeugen (sonst nur buchen, z. B. wenn direkt vom Rücklagenkonto bezahlt)</label></div>
+    <input type="hidden" name="kind" value="out">
+    <button {% if problems %}disabled title="Erst Konten eintragen"{% endif %}>Auszahlung erzeugen</button>
+  </form>
+  <details style="margin-top:12px"><summary class="muted">Anfangsbestand oder manuelle Zuführung buchen</summary>
+  <form method="post" action="/admin/reserves/entry" style="margin-top:8px">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <div class="grid">
+      <div><label>Art</label><select name="kind"><option value="start">Anfangsbestand</option><option value="in">Zuführung (manuell)</option><option value="out">Auszahlung (ohne SEPA)</option></select></div>
+      <div><label>Position</label><select name="ref" required>{% for r in balances %}<option value="{{ r.ref }}">{{ r.name }}</option>{% endfor %}</select></div>
+      <div><label>Betrag (€)</label><input type="text" name="amount" inputmode="decimal" required></div>
+      <div><label>Datum</label><input type="date" name="booking_date" value="{{ today.isoformat() }}"></div>
+    </div>
+    <label>Notiz</label><input type="text" name="note" maxlength="140">
+    <button class="sec">Buchen</button>
+  </form></details>
+</div>
+
+<h2>SEPA-Dateien</h2>
+<div class="card scroll"><table>
+  <tr><th>Erstellt</th><th>Art</th><th>Ausführung</th><th class="r">Anzahl</th><th class="r">Summe</th><th>Datei</th><th>Status</th></tr>
+  {% for ex in exports %}
+  <tr><td>{{ ex.created_at.strftime('%d.%m.%Y %H:%M') }}{% if ex.created_by %} <span class="muted">· {{ ex.created_by }}</span>{% endif %}</td>
+    <td>{{ 'Zuführung' if ex.kind == 'in' else 'Auszahlung' }}</td>
+    <td>{{ ex.exec_date.strftime('%d.%m.%Y') if ex.exec_date else '' }}</td>
+    <td class="r">{{ ex.count }}</td><td class="r">{{ ex.total|eur }}</td>
+    <td><a href="/admin/reserves/export/{{ ex.id }}.xml">⬇ {{ ex.filename }}</a></td>
+    <td style="min-width:220px">
+    {% if ex.status == 'done' %}
+      <span class="badge" style="background:#dcfce7;color:#166534">✓ ausgeführt</span>
+      <span class="muted" style="font-size:12px">{{ ex.confirmed_at.strftime('%d.%m.%Y') if ex.confirmed_at }}{% if ex.confirmed_by %} · {{ ex.confirmed_by }}{% endif %}</span>
+      <form method="post" action="/admin/reserves/export/{{ ex.id }}/confirm" style="display:inline" onsubmit="return confirm('Bestätigung zurücknehmen?')"><input type="hidden" name="undo" value="1"><button class="sec">zurücknehmen</button></form>
+    {% else %}
+      <span class="badge" style="background:#fef3c7;color:#92400e">⏳ wartet auf Ausführung</span>
+      <form method="post" action="/admin/reserves/export/{{ ex.id }}/confirm" style="display:flex;gap:6px;align-items:center;margin-top:4px">
+        <input type="date" name="executed_on" value="{{ (ex.exec_date or today).isoformat() }}" style="width:auto" aria-label="ausgeführt am">
+        <button>✓ Ausgeführt</button></form>
+      <form method="post" action="/admin/reserves/export/{{ ex.id }}/delete" style="display:inline" onsubmit="return confirm('Datei verwerfen? Nur wenn sie NICHT ausgeführt wurde – die Posten sind danach wieder offen.')"><button class="sec">Verwerfen</button></form>
+    {% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">Noch keine Dateien erzeugt.</td></tr>{% endfor %}
+</table></div>
+
+<h2>Buchungen</h2>
+<div class="card scroll"><table>
+  <tr><th>Datum</th><th>Art</th><th>Position</th><th>Partei</th><th class="r">Betrag</th><th>Verwendungszweck / Notiz</th><th></th></tr>
+  {% for e in entries %}
+  <tr><td>{{ e.booking_date.strftime('%d.%m.%Y') if e.booking_date else '' }}</td><td>{{ kinds.get(e.kind, e.kind) }}</td>
+    <td>{{ names.get(e.ref, e.name) }}</td><td>{{ parties[e.party_id].name if e.party_id in parties else '' }}</td>
+    <td class="r">{{ e.amount|eur }}{% if e.export_id in open_ids %} <span class="muted">(vorgemerkt)</span>{% endif %}</td><td><span class="muted" style="font-size:12px">{{ e.note }}</span></td>
+    <td>{% if not e.export_id %}<form method="post" action="/admin/reserves/entry/{{ e.id }}/delete" onsubmit="return confirm('Buchung löschen?')"><button class="sec">Löschen</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">Noch keine Buchungen.</td></tr>{% endfor %}
+</table></div>
+{% if not problems %}<details class="card" {% if problems %}open{% endif %}>
+  <summary><b>🏦 Konten</b> <span class="muted">Hauptkonto {{ fmt_iban(bld.account_iban) or "–" }} → Rücklagenkonto {{ fmt_iban(bld.reserve_iban) or "–" }}</span></summary>
+  <p class="muted">Kontoinhaber genau so eintragen, wie er bei der Bank geführt wird – die Bank prüft beim Hochladen, ob
+  Name und IBAN zusammenpassen (Empfängerprüfung).</p>
+  <form method="post" action="/admin/reserves/accounts">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <h3>Hauptkonto / Girokonto</h3>
+    <div class="grid">
+      <div><label>Kontoinhaber</label><input type="text" name="account_name" maxlength="70" value="{{ bld.account_name }}"></div>
+      <div><label>IBAN</label><input type="text" name="account_iban" value="{{ fmt_iban(bld.account_iban) }}" placeholder="DE.. .... .... .... .... .."></div>
+      <div><label>BIC (optional)</label><input type="text" name="account_bic" maxlength="11" value="{{ bld.account_bic }}"></div>
+    </div>
+    <h3>Rücklagenkonto</h3>
+    <div class="grid">
+      <div><label>Kontoinhaber</label><input type="text" name="reserve_name" maxlength="70" value="{{ bld.reserve_name }}"></div>
+      <div><label>IBAN</label><input type="text" name="reserve_iban" value="{{ fmt_iban(bld.reserve_iban) }}"></div>
+      <div><label>BIC (optional)</label><input type="text" name="reserve_bic" maxlength="11" value="{{ bld.reserve_bic }}"></div>
+    </div>
+    <div class="grid">
+      <div><label>Rücklagen ab Abrechnungsmonat</label><input type="month" name="reserve_start" value="{{ bld.reserve_start }}">
+        <p class="muted" style="margin:4px 0 0">Ältere Abrechnungen werden ignoriert (leer = alle).</p></div>
+      <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <button>Konten speichern</button>
+  </form>
+</details>{% endif %}
+<script>
+function rlPrefill() {
+  const sel = document.getElementById('rl-ref'), amt = document.getElementById('rl-amount');
+  if (!sel || !amt || amt.dataset.touched) return;
+  const v = parseFloat(sel.selectedOptions[0]?.dataset.total || '0');
+  amt.value = v > 0 ? v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const amt = document.getElementById('rl-amount');
+  if (amt) amt.addEventListener('input', () => { amt.dataset.touched = '1'; });
+  rlPrefill();
+});
+function rlSum() {
+  const boxes = [...document.querySelectorAll('.rl-item')].filter(c => c.checked);
+  const sum = boxes.reduce((a, c) => a + parseFloat(c.dataset.amount), 0);
+  const el = document.getElementById('rl-sum');
+  if (el) el.textContent = sum.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+  const n = document.getElementById('rl-count');
+  if (n) n.textContent = boxes.length + ' Überweisung(en)';
+}
+</script>
+{% endblock %}

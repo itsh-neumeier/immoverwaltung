@@ -208,6 +208,25 @@ Vorbei, aber noch nicht archiviert: im Portal grau unter **„✓ Abgeschlossen�
 danach im Verlauf mit Kennzeichnung – so kann ein vergangener Hinweis nicht mit einem aktuellen verwechselt werden.
 Systemmeldungen: Fehler = hoch, Versand/Zustellung = niedrig, Rechnungseingang mit Hinweisen = hoch.
 
+### Rücklagen (zeitversetzte Zahlungen, SEPA-Datei)
+
+Für Kosten, die monatlich abgerechnet, aber erst später bezahlt werden (Wassergeld, IPTV, Kaminkehrer):
+
+1. Unter **Fixkosten & Umlagen** bei der Position „Rücklage bilden“ anhaken, optional den Zweck (z. B. `WASSERGELD`).
+2. Unter **Rücklagen → Konten** Hauptkonto und Rücklagenkonto (Inhaber, IBAN, optional BIC) speichern. Der Inhaber muss
+   so geschrieben sein wie bei der Bank, weil die Bank beim Hochladen Name und IBAN abgleicht.
+3. Nach dem Abschließen einer Abrechnung erscheinen die offenen Beträge **je Partei und Position**, z. B. mit dem
+   Verwendungszweck `RUECKLAGE AUS NEBENKOSTENABRECHNUNG 09/2026 MIETER FAMILIE ZWEIG GID: 134 WE-1 WASSERGELD 30,34 EUR`.
+   „SEPA-Datei erzeugen“ liefert eine Sammelüberweisung (pain.001.001.09, wahlweise .03) als eine logische Datei mit
+   Ausführungsdatum; der Dateiname enthält nur erlaubte Zeichen. Hochladen im Online-Banking unter „Datei-Übergabe“.
+4. Nach der Ausführung **„✓ Ausgeführt“ bestätigen**. Erst dann zählt der Betrag im **virtuellen Rücklagenkonto**
+   (Stand gesamt und je Position). Eine abgelehnte Datei „Verwerfen“: Die Posten sind dann wieder offen.
+5. **Rechnung fällig:** Position und Betrag wählen (der aktuelle Stand ist vorbelegt). Erzeugt wird eine
+   SEPA-Gutschrift vom Rücklagenkonto aufs Hauptkonto, die nach der Ausführung ebenfalls bestätigt wird.
+
+Weitere Optionen: Rücklagen erst ab einem Abrechnungsmonat, Anteil des Eigentümers ein- oder ausschließen
+(Verwendungszweck „EIGENTUEMER …“), Anfangsbestand buchen.
+
 ### Webhook-API (n8n, Home Assistant)
 
 Menü **API** (nur Super-Admin): API-Schlüssel anlegen (optional auf Gebäude beschränkt, optional ohne Recht auf

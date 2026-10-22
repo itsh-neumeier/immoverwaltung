@@ -36,6 +36,16 @@ class Building(Base):
     photo_updated: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort: Mapped[int] = mapped_column(Integer, default=0)
+    # Rücklagen: Überweisung vom Girokonto aufs Rücklagenkonto (SEPA-Datei)
+    account_name: Mapped[str] = mapped_column(String(70), default="")  # Kontoinhaber Girokonto
+    account_iban: Mapped[str] = mapped_column(String(34), default="")
+    account_bic: Mapped[str] = mapped_column(String(11), default="")
+    reserve_name: Mapped[str] = mapped_column(String(70), default="")  # Kontoinhaber Rücklagenkonto
+    reserve_iban: Mapped[str] = mapped_column(String(34), default="")
+    reserve_bic: Mapped[str] = mapped_column(String(11), default="")
+    reserve_start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM: Rücklagen ab diesem Abrechnungsmonat
+    sepa_format: Mapped[str] = mapped_column(String(20), default="pain.001.001.09")
+    reserve_owner: Mapped[bool] = mapped_column(Boolean, default=True)  # Anteil des Eigentümers mit zurücklegen
 
     @property
     def label(self) -> str:
@@ -109,6 +119,44 @@ class ApiKey(Base):
     uses: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class SepaExport(Base):
+    """Erzeugte SEPA-Sammelüberweisung (pain.001) – zum Hochladen ins Online-Banking (Datei-Übergabe)."""
+
+    __tablename__ = "sepa_exports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(10), default="in")  # in = Zuführung | out = Entnahme
+    msg_id: Mapped[str] = mapped_column(String(35), default="")
+    exec_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[float] = mapped_column(Float, default=0.0)
+    filename: Mapped[str] = mapped_column(String(100), default="")
+    xml: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open = erzeugt | done = Ausführung bestätigt
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(100), default="")
+
+
+class ReserveEntry(Base):
+    """Buchung im Rücklagenkonto je Zweck: Zuführung (+), Entnahme (−), Anfangsbestand."""
+
+    __tablename__ = "reserve_entries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    ref: Mapped[str] = mapped_column(String(20), default="", index=True)  # fc:<id> | al:<id>
+    name: Mapped[str] = mapped_column(String(200), default="")
+    booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    kind: Mapped[str] = mapped_column(String(10), default="in")  # in | out | start
+    billing_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    party_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    export_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    note: Mapped[str] = mapped_column(String(140), default="")  # Verwendungszweck bzw. Notiz
+
+
 class PushSubscription(Base):
     """Web-Push-Abo eines Geräts (PWA/Browser) für einen Benutzer."""
 
@@ -155,6 +203,8 @@ class FixedCost(Base):
     amount_gross: Mapped[float] = mapped_column(Float, default=0.0)
     party_ids: Mapped[list] = mapped_column(JSON, default=list)  # leer = alle
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    reserve: Mapped[bool] = mapped_column(Boolean, default=False)  # zeitversetzt bezahlt → Rücklage bilden
+    reserve_label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. IPTV
 
 
 class Allocation(Base):
@@ -172,6 +222,8 @@ class Allocation(Base):
     key_unit: Mapped[str] = mapped_column(String(20), default="")
     key: Mapped[dict] = mapped_column(JSON, default=dict)  # {party_id: entity | prozent}
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    reserve: Mapped[bool] = mapped_column(Boolean, default=False)  # zeitversetzt bezahlt → Rücklage bilden
+    reserve_label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. WASSERGELD
 
 
 class Billing(Base):

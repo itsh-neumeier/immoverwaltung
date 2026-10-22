@@ -10,6 +10,9 @@
   {% for p in parties %}
   <div class="check"><input type="checkbox" name="party_ids" value="{{ p.id }}" id="p{{ p.id }}" {% if p.id in (c.party_ids or [])|map('int')|list %}checked{% endif %}><label for="p{{ p.id }}" style="margin:0">{{ p.name }}</label></div>
   {% endfor %}
+  <div class="check"><input type="checkbox" name="reserve" id="rs" {% if c.reserve %}checked{% endif %}><label for="rs" style="margin:0">Rücklage bilden – wird zeitversetzt bezahlt (z. B. Wassergeld, IPTV, Kaminkehrer)</label></div>
+  <label>Zweck im Verwendungszweck der Rücklage (optional)</label>
+  <input type="text" name="reserve_label" maxlength="60" value="{{ c.reserve_label or '' }}" placeholder="z. B. WASSERGELD – leer = Bezeichnung">
   <div class="check"><input type="checkbox" name="active" id="a" {% if c.active %}checked{% endif %}><label for="a" style="margin:0">aktiv</label></div>
   <button>Speichern</button>
   {% if cid %}<button class="danger" name="delete" value="1" onclick="return confirm('Löschen?')">Löschen</button>{% endif %}

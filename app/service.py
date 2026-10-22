@@ -253,7 +253,8 @@ def recompute(s: Session, b: Billing) -> dict:
         for p in db_parties
     ]
     fixed = [
-        calc.FixedCostCfg(name=f.name, amount_gross=f.amount_gross, party_ids=[int(x) for x in f.party_ids or []])
+        calc.FixedCostCfg(name=f.name, amount_gross=f.amount_gross, party_ids=[int(x) for x in f.party_ids or []],
+                          id=f.id)
         for f in s.query(FixedCost).filter(FixedCost.active.is_(True)).order_by(FixedCost.id).all()
     ]
     allocs = []

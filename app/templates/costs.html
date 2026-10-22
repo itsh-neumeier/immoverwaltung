@@ -10,7 +10,7 @@
 {% for c in costs %}
 <tr><td><a href="/admin/costs/fixed/{{ c.id }}">{{ c.name }}</a></td><td class="r">{{ c.amount_gross|eur }}</td>
 <td>{% if c.party_ids %}{% for i in c.party_ids %}{{ parties.get(i|int, '?') }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}alle Parteien{% endif %} (gleichmäßig)</td>
-<td>{{ "aktiv" if c.active else "inaktiv" }}</td></tr>
+<td>{{ "aktiv" if c.active else "inaktiv" }}{% if c.reserve %} · <a href="/admin/reserves">🏦 Rücklage</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="4" class="muted">z. B. „IPTV-Bereitstellung“</td></tr>{% endfor %}
 </table></div>
 
@@ -25,7 +25,7 @@
 {% else %}Betrag (Standard {{ a.default_amount|eur }}){% endif %}</td>
 <td>{{ {'entity':'Verbrauch je Partei (HA)','percent':'feste Prozente','equal':'gleichmäßig'}[a.key_type] }}
 {% if a.key_type == 'percent' %}<span class="muted">({% for pid, v in (a.key or {}).items() %}{{ parties.get(pid|int, '?') }} {{ v|num(1) }} %{% if not loop.last %}, {% endif %}{% endfor %})</span>{% endif %}</td>
-<td>{{ "aktiv" if a.active else "inaktiv" }}</td></tr>
+<td>{{ "aktiv" if a.active else "inaktiv" }}{% if a.reserve %} · <a href="/admin/reserves">🏦 Rücklage</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="4" class="muted">z. B. „Trinkwasser“ (m³ aus HA × Preis je m³, nach Prozent) oder „Warmwasserbereitung“ (kWh des Shelly zum Hausstrom-Mix, nach Prozent)</td></tr>{% endfor %}
 </table></div>
 {% endblock %}
