@@ -46,6 +46,13 @@ class Building(Base):
     reserve_start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM: Rücklagen ab diesem Abrechnungsmonat
     sepa_format: Mapped[str] = mapped_column(String(20), default="pain.001.001.09")
     reserve_owner: Mapped[bool] = mapped_column(Boolean, default=True)  # Anteil des Eigentümers mit zurücklegen
+    # Kontostände laut Bank (aus dem CAMT-Kontoauszug)
+    bank_main_balance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bank_main_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    bank_reserve_balance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bank_reserve_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    bank_reserve_open: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # ältester bekannter Stand
+    bank_reserve_open_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     @property
     def label(self) -> str:
@@ -132,6 +139,10 @@ class ReservePlan(Base):
     interval: Mapped[int] = mapped_column(Integer, default=1)  # Monate je Zuführung: 1, 3, 6, 12
     start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM erste Zuführung
     due_note: Mapped[str] = mapped_column(String(120), default="")  # z. B. „15.02./15.05./15.08./15.11.“
+    category: Mapped[str] = mapped_column(String(20), default="immobilie")  # immobilie | privat
+    funding: Mapped[str] = mapped_column(String(20), default="sepa")  # sepa (Datei aus der App) | dauerauftrag (Bank)
+    keywords: Mapped[str] = mapped_column(String(200), default="")  # Stichworte zum Erkennen im Kontoauszug
+    standing_order: Mapped[float] = mapped_column(Float, default=0.0)  # aktueller Dauerauftrag €/Monat (Ist)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -340,6 +351,17 @@ def init_db() -> None:
     _add_missing_columns()
     _rename_legacy_titles()
     _migrate_multisite()
+    _backfill_reserve_e2e()
+
+
+def _backfill_reserve_e2e() -> None:
+    """Rücklagen-Buchungen aus der ersten Version: End-to-End-Referenz nachtragen (für eindeutige Treffer beim Abgleich)."""
+    with SessionLocal() as s:
+        for e in s.query(ReserveEntry).filter(ReserveEntry.e2e == "", ReserveEntry.kind == "in",
+                                              ReserveEntry.billing_id.isnot(None), ReserveEntry.party_id.isnot(None),
+                                              ReserveEntry.export_id.isnot(None)):
+            e.e2e = f"RL{e.billing_id}P{e.party_id}{e.ref.replace(':', '')}"
+        s.commit()
 
 
 def _migrate_multisite() -> None:

@@ -57,15 +57,26 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <button>Konten speichern</button>
   </form>
 </details>{% endif %}
-<h2>Rücklagenkonto (virtuell)</h2>
+<h2>Rücklagenkonto</h2>
 <div class="card">
-  <div class="muted">Stand laut bestätigten Buchungen</div>
-  <div style="font-size:1.8rem;font-weight:700">{{ balances|sum(attribute='total')|eur }}</div>
+  <div class="kpis">
+    <div><div class="muted">Kontostand laut Bank{% if bld.bank_reserve_date %} ({{ bld.bank_reserve_date.strftime('%d.%m.%Y') }}){% endif %}</div>
+      <div class="kpi">{{ bld.bank_reserve_balance|eur if bld.bank_reserve_balance is not none else '–' }}</div></div>
+    <div><div class="muted">verteilt auf Töpfe</div><div class="kpi">{{ pots_total|eur }}</div></div>
+    <div><div class="muted">frei / nicht zugeordnet</div>
+      <div class="kpi" {% if free is not none and free < 0 %}style="color:var(--danger)"{% endif %}>{{ free|eur if free is not none else '–' }}</div></div>
+    <div><div class="muted">Hauptkonto{% if bld.bank_main_date %} ({{ bld.bank_main_date.strftime('%d.%m.%Y') }}){% endif %}</div>
+      <div class="kpi" {% if bld.bank_main_balance is not none and bld.bank_main_balance < 0 %}style="color:var(--danger)"{% endif %}>{{ bld.bank_main_balance|eur if bld.bank_main_balance is not none else '–' }}</div></div>
+  </div>
+  {% if bld.bank_reserve_balance is none %}<p class="muted">Kontostände kommen aus dem Kontoauszug (CAMT) – unten unter „Kontoabgleich“ einlesen.</p>
+  {% elif free %}<p class="muted">„Frei“ = Kontostand minus Summe der Töpfe: Geld ohne Zweck, z. B. der Anfangsbestand vor dem ersten
+  eingelesenen Auszug{% if bld.bank_reserve_open is not none %} ({{ bld.bank_reserve_open|eur }} am {{ bld.bank_reserve_open_date.strftime('%d.%m.%Y') }}){% endif %}.
+  Über „Anfangsbestand“ auf die Töpfe verteilen.</p>{% endif %}
   {% set pl_in = balances|sum(attribute='planned_in') %}{% set pl_out = balances|sum(attribute='planned_out') %}
-  {% if pl_in or pl_out %}<div class="muted">vorgemerkt (Datei noch nicht als ausgeführt bestätigt):
+  {% if pl_in or pl_out %}<div class="muted">vorgemerkt (Datei noch nicht ausgeführt):
     {% if pl_in %}+{{ pl_in|eur }}{% endif %} {% if pl_out %}{{ pl_out|eur }}{% endif %}</div>{% endif %}
   <div class="scroll" style="margin-top:10px"><table>
-    <tr><th>Position</th><th class="r">Zuführungen</th><th class="r">Auszahlungen</th><th class="r">Stand</th><th class="r">vorgemerkt</th></tr>
+    <tr><th>Topf</th><th class="r">Zuführungen</th><th class="r">Auszahlungen</th><th class="r">Stand</th><th class="r">vorgemerkt</th></tr>
     {% for r in balances %}
     <tr><td>{{ r.name }}</td><td class="r">{{ r['in']|eur }}</td><td class="r">{{ (-r['out'] if r['out'] else 0)|eur }}</td>
       <td class="r"><b>{{ r.total|eur }}</b></td>
@@ -105,26 +116,36 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   {% else %}<p class="muted">Keine offenen Beträge – alle abgeschlossenen Abrechnungen und festen Rücklagen sind zurückgelegt.</p>{% endif %}
 </form>
 
-<h2 id="feste">Feste Rücklagen (außerhalb der Abrechnung)</h2>
+<h2 id="feste">Rücklagen-Töpfe (außerhalb der Abrechnung)</h2>
 <div class="card">
-  <p class="muted">Z. B. <b>Grundsteuer</b> oder <b>Wohngebäudeversicherung</b>: Jahresbetrag eintragen – der Anteil wird
-  im gewählten Rhythmus als offene Zuführung oben angeboten (ab Startmonat bis zum laufenden Monat) und mit in die
-  SEPA-Datei aufgenommen. Ist die Rechnung fällig: unten „Auszahlung aufs Hauptkonto“.</p>
-  {% if plans %}
+  <p class="muted">Für Immobilie <b>und</b> Privates – z. B. Grundsteuer, Wohngebäudeversicherung, KFZ-Steuer, TÜV, Abos.
+  <b>Dauerauftrag</b>: die Bank überweist, die App ordnet die Umsätze aus dem Kontoauszug per Stichwort zu.
+  <b>SEPA-Datei</b>: der Anteil wird oben als offene Zuführung angeboten. Soll = Jahresbetrag / 12 – weicht der Dauerauftrag ab,
+  steht ein Hinweis dabei.</p>
+  {% if plan_rows %}
   <div class="scroll"><table>
-    <tr><th>Bezeichnung</th><th class="r">Jahresbetrag</th><th>Zuführung</th><th>ab</th><th>Fällig</th><th></th></tr>
-    {% for p in plans %}
+    <tr><th>Topf</th><th>Weg</th><th class="r">Jahresbetrag</th><th class="r">Soll / Monat</th><th class="r">Dauerauftrag</th>
+      <th class="r">Ist (12 Mon.)</th><th class="r">Ausgaben (12 Mon.)</th><th class="r">Stand</th><th></th></tr>
+    {% for r in plan_rows %}{% set p = r.plan %}
     <tr{% if not p.active %} class="muted"{% endif %}>
-      <td><b>{{ p.name }}</b>{% if not p.active %} <span class="badge">inaktiv</span>{% endif %}<br><span class="muted" style="font-size:12px">Zweck: {{ p.label or p.name|upper }}</span></td>
-      <td class="r">{{ p.annual_amount|eur }}</td><td>{{ p.rate|eur }} {{ intervals.get(p.interval, '') }}</td>
-      <td>{{ p.start[5:] }}/{{ p.start[:4] }}</td><td>{{ p.due_note }}</td>
+      <td><b>{{ p.name }}</b> <span class="badge">{{ 'Privat' if p.category == 'privat' else 'Immobilie' }}</span>{% if not p.active %} <span class="badge">inaktiv</span>{% endif %}
+        {% if p.due_note %}<br><span class="muted" style="font-size:12px">fällig: {{ p.due_note }}</span>{% endif %}
+        {% if r.hint %}<br><span style="font-size:12px;color:var(--warn)">⚠ {{ r.hint }}</span>{% endif %}</td>
+      <td>{{ 'Dauerauftrag' if p.funding == 'dauerauftrag' else 'SEPA-Datei' }}{% if p.funding != 'dauerauftrag' %}<br><span class="muted" style="font-size:12px">{{ p.rate|eur }} {{ intervals.get(p.interval, '') }}</span>{% endif %}</td>
+      <td class="r">{{ p.annual_amount|eur }}</td><td class="r">{{ r.soll|eur }}</td>
+      <td class="r">{{ p.standing_order|eur if p.funding == 'dauerauftrag' else '–' }}</td>
+      <td class="r">{{ r.ist|eur }}</td><td class="r">{{ r.out12|eur }}</td>
+      <td class="r"><b {% if r.stand < 0 %}style="color:var(--danger)"{% endif %}>{{ r.stand|eur }}</b></td>
       <td style="white-space:nowrap"><a class="btn sec" href="?building={{ bld.id }}&plan={{ p.id }}#feste">Bearbeiten</a>
-        <form method="post" action="/admin/reserves/plan/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Löschen? Mit vorhandenen Buchungen wird sie nur deaktiviert.')"><button class="sec">Löschen</button></form></td>
+        <form method="post" action="/admin/reserves/plan/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Löschen? Mit vorhandenen Buchungen wird der Topf nur deaktiviert.')"><button class="sec">Löschen</button></form></td>
     </tr>{% endfor %}
+    {% set dsum = plan_rows|selectattr('plan.funding', 'equalto', 'dauerauftrag')|selectattr('plan.active')|map(attribute='plan.standing_order')|sum %}
+    {% set ssum = plan_rows|selectattr('plan.active')|sum(attribute='soll') %}
+    <tr><td colspan="3"><b>Summe (aktive Töpfe)</b></td><td class="r"><b>{{ ssum|eur }}</b></td><td class="r"><b>{{ dsum|eur }}</b></td><td colspan="4"></td></tr>
   </table></div>
   {% endif %}
-  {% set ep = edit_plan %}
-  <details {% if ep or not plans %}open{% endif %} style="margin-top:8px"><summary><b>{{ 'Bearbeiten: ' ~ ep.name if ep else '+ Feste Rücklage anlegen' }}</b></summary>
+
+  <details {% if ep or not plans %}open{% endif %} style="margin-top:8px"><summary><b>{{ 'Bearbeiten: ' ~ ep.name if ep else '+ Topf anlegen' }}</b></summary>
   <form method="post" action="/admin/reserves/plan" style="margin-top:8px">
     <input type="hidden" name="building" value="{{ bld.id }}"><input type="hidden" name="id" value="{{ ep.id if ep else 0 }}">
     <div class="grid">
@@ -134,6 +155,10 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Zuführung</label><select name="interval">{% for k, v in intervals.items() %}<option value="{{ k }}" {% if ep and ep.interval == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
       <div><label>ab Monat</label><input type="month" name="start" value="{{ ep.start if ep else today.strftime('%Y-%m') }}"></div>
       <div><label>Fälligkeit (Info)</label><input type="text" name="due_note" maxlength="120" value="{{ ep.due_note if ep else '' }}" placeholder="15.02./15.05./15.08./15.11."></div>
+      <div><label>Bereich</label><select name="category"><option value="immobilie">Immobilie (mit GID im Zweck)</option><option value="privat" {% if ep and ep.category == 'privat' %}selected{% endif %}>Privat / Sonstiges</option></select></div>
+      <div><label>Weg</label><select name="funding"><option value="sepa">SEPA-Datei aus der App</option><option value="dauerauftrag" {% if ep and ep.funding == 'dauerauftrag' %}selected{% endif %}>Dauerauftrag der Bank</option></select></div>
+      <div><label>Dauerauftrag aktuell (€/Monat)</label><input type="text" name="standing_order" inputmode="decimal" value="{{ ep.standing_order|num(2) if ep and ep.standing_order else '' }}" placeholder="50,00"></div>
+      <div><label>Stichworte im Kontoauszug</label><input type="text" name="keywords" maxlength="200" value="{{ ep.keywords if ep else '' }}" placeholder="leer = aus Name/Zweck; Varianten mit Komma: KFZ STEUER OPEL, INSIGNIA STEUER"></div>
     </div>
     {% if ep %}<div class="check"><input type="checkbox" name="active" id="rp-act" {% if ep.active %}checked{% endif %}><label for="rp-act" style="margin:0">aktiv</label></div>{% endif %}
     <button>Speichern</button>
@@ -212,13 +237,31 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   <form method="post" action="/admin/reserves/bank/import" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <input type="hidden" name="building" value="{{ bld.id }}">
     <input type="file" name="file" accept=".xml,.zip,.csv,application/xml,text/xml,text/csv,application/zip" required style="max-width:100%">
+    <label style="margin:0">ab <input type="date" name="since" style="width:auto;display:inline-block" title="leer = alle Umsätze der Datei"></label>
     <button {% if problems %}disabled title="Erst Konten eintragen"{% endif %}>Kontoauszug einlesen</button>
   </form>
+
+  {% if detected %}
+  <h3>Erkannte Daueraufträge ({{ detected|length }})</h3>
+  <p class="muted">Regelmäßige Gutschriften auf dem Rücklagenkonto, die noch zu keinem Topf passen. Anhaken und als Topf anlegen
+  (Weg: Dauerauftrag, Jahresbetrag = 12 × Monatsbetrag – danach den echten Jahresbetrag der Rechnung eintragen).</p>
+  <form method="post" action="/admin/reserves/plans/detect">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <div class="scroll"><table>
+      <tr><th><input type="checkbox" checked aria-label="alle" onclick="this.form.querySelectorAll('input[name=keys]').forEach(c => c.checked = this.checked)"></th>
+        <th>Topf</th><th class="r">€/Monat</th><th>seit</th><th class="r">Anzahl</th><th>Zyklus</th><th>Bereich</th></tr>
+      {% for d in detected %}<tr><td><input type="checkbox" name="keys" value="{{ d.key }}" checked></td><td>{{ d.name }}</td>
+        <td class="r">{{ d.monthly|eur }}</td><td>{{ d.first[5:] }}/{{ d.first[:4] }}</td><td class="r">{{ d.count }}</td><td>{{ d.due }}</td>
+        <td>{{ 'Immobilie' if d.category == 'immobilie' else 'Privat' }}</td></tr>{% endfor %}
+    </table></div>
+    <button>Ausgewählte als Töpfe anlegen</button>
+  </form>
+  {% endif %}
 
   {% if lines %}
   <h3>Umsätze zuordnen ({{ lines|length }})</h3>
   {% if sure %}<form method="post" action="/admin/reserves/bank/confirm-sure" style="margin-bottom:8px"><input type="hidden" name="building" value="{{ bld.id }}">
-    <button>✓ {{ sure }} eindeutige Treffer bestätigen</button> <span class="muted">(gleiche End-to-End-Referenz bzw. Sammler-Referenz)</span></form>{% endif %}
+    <button>✓ {{ sure }} eindeutige Treffer bestätigen</button> <span class="muted">(gleiche Referenz, Gegenbuchung oder eindeutiges Stichwort)</span></form>{% endif %}
   {% if lines|length > sure %}<form method="post" action="/admin/reserves/bank/hide-rest" style="margin-bottom:8px" onsubmit="return confirm('Alle Umsätze ohne passenden Vorschlag ausblenden? Lässt sich unter „Zugeordnete/ausgeblendete Umsätze“ wieder aufheben.')"><input type="hidden" name="building" value="{{ bld.id }}">
     <button class="sec">Alle ohne Vorschlag ausblenden</button></form>{% endif %}
   {% for l in lines %}{% set cs = cands[l.id] %}
@@ -232,15 +275,12 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <div class="muted" style="font-size:12px">{{ l.purpose }}{% if l.e2e %} · Ref. {{ l.e2e }}{% endif %}{% if l.batch_count %} · Sammelbuchung ({{ l.batch_count }}){% endif %}</div>
     <form method="post" action="/admin/reserves/bank/{{ l.id }}" class="bank-actions">
       {% if cs %}
-      <select name="match" aria-label="passende Buchung">
-        {% for c in cs %}<option value="{{ c.value }}">{{ '★ ' if c.score == 100 else ('☆ ' if c.score >= 90 else '') }}{{ c.amount|eur }} · {{ c.date.strftime('%d.%m.%Y') if c.date else '' }} · {{ c.text[:110] }}</option>{% endfor %}
+      <select name="match" aria-label="passende Buchung oder Topf">
+        {% if cs[0].score < pick %}<option value="" selected>— bitte wählen —</option>{% endif %}
+        {% for c in cs %}<option value="{{ c.value }}">{{ '★ ' if c.score >= surescore else ('☆ ' if c.score >= pick else '') }}{% if c.value[:2] != 'p:' %}{{ c.amount|eur }} · {{ c.date.strftime('%d.%m.%Y') if c.date else '' }} · {% endif %}{{ c.text[:110] }}</option>{% endfor %}
       </select>
       <button name="action" value="match">✓ Zuordnen</button>
-      {% else %}<span class="muted">Keine passende Überweisung gefunden.</span>{% endif %}
-      {% if l.account == 'reserve' and not cs %}
-      <select name="ref" aria-label="Position">{% for r in balances %}<option value="{{ r.ref }}">{{ r.name }}</option>{% endfor %}</select>
-      <button class="sec" name="action" value="book">als {{ 'Zuführung' if l.amount > 0 else 'Auszahlung' }} buchen</button>
-      {% endif %}
+      {% else %}<span class="muted">Kein passender Vorschlag.</span>{% endif %}
       <button class="sec" name="action" value="ignore">Ausblenden</button>
     </form>
   </div>
@@ -261,7 +301,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     {% for l in matched_lines %}<tr><td>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</td>
       <td>{{ 'Hauptkonto' if l.account == 'main' else 'Rücklagenkonto' }}</td><td class="r">{{ l.amount|eur }}</td>
       <td><span class="muted" style="font-size:12px">{{ l.purpose[:120] }}</span></td>
-      <td>{% if l.ignored %}<span class="badge">ausgeblendet</span>{% else %}✓ {{ l.entry_ids|length }} Buchung(en){% endif %}</td>
+      <td>{% if l.ignored %}<span class="badge">ausgeblendet</span>{% else %}✓ {% for eid in l.entry_ids[:1] %}{{ names.get(entry_refs.get(eid, ''), '') }}{% endfor %}{% if l.entry_ids|length > 1 %} ({{ l.entry_ids|length }} Buchungen){% endif %}{% endif %}</td>
       <td><form method="post" action="/admin/reserves/bank/{{ l.id }}"><button class="sec" name="action" value="unlink">aufheben</button></form></td></tr>{% endfor %}
   </table></div></details>
   {% endif %}

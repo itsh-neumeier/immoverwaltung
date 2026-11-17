@@ -25,6 +25,14 @@ class ImportError_(ValueError):
 
 
 @dataclass
+class Balance:
+    account_iban: str
+    day: Optional[date]
+    kind: str  # OPBD = Anfangssaldo, CLBD = Endsaldo (gebucht)
+    amount: float
+
+
+@dataclass
 class Txn:
     account_iban: str
     booking_date: Optional[date]
@@ -87,7 +95,7 @@ def _iban(acct) -> str:
     return _text(acct, "Id", "IBAN")
 
 
-def parse_camt(data: bytes) -> list[Txn]:
+def parse_camt(data: bytes, balances: Optional[list] = None) -> list[Txn]:
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
@@ -100,6 +108,13 @@ def parse_camt(data: bytes) -> list[Txn]:
     body = next(iter(root), None)
     for stmt in [c for c in (body if body is not None else []) if _local(c.tag) in ("Stmt", "Rpt", "Ntfctn")]:
         own = _iban(_child(stmt, "Acct"))
+        for bal in _children(stmt, "Bal"):
+            kind = _text(bal, "Tp", "CdOrPrtry", "Cd") or _text(bal, "Tp", "CdOrPrtry", "Prtry")
+            amt = _child(bal, "Amt")
+            if balances is not None and kind in ("OPBD", "CLBD", "PRCD", "CLAV") and amt is not None and amt.text:
+                sign = -1 if _text(bal, "CdtDbtInd") == "DBIT" else 1
+                d = _child(bal, "Dt")
+                balances.append(Balance(own, _date(d) if d is not None else None, kind, round(float(amt.text) * sign, 2)))
         for ntry in _children(stmt, "Ntry"):
             sts = _text(ntry, "Sts", "Cd") or _text(ntry, "Sts")
             if sts and sts.upper() not in ("BOOK",):
@@ -136,7 +151,7 @@ def parse_camt(data: bytes) -> list[Txn]:
                     _iban(_child(rp, other[1])), "" if e2e == "NOTPROVIDED" else e2e,
                     pmtinf or _text(refs, "PmtInfId") or (_text(refs, "MsgId") if len(txs) > 1 else ""),
                     count if len(txs) > 1 else 0, info, f"{nref}#{i}" if nref else "", source))
-    if not out:
+    if not out and not balances:
         raise ImportError_("Keine gebuchten Umsätze in der Datei gefunden.")
     return out
 
@@ -208,8 +223,8 @@ def parse_csv(data: bytes) -> list[Txn]:
     return out
 
 
-def parse(filename: str, data: bytes) -> list[Txn]:
-    """Datei (XML, ZIP mit XML-Dateien oder CSV) einlesen."""
+def parse(filename: str, data: bytes, balances: Optional[list] = None) -> list[Txn]:
+    """Datei (XML, ZIP mit XML-Dateien oder CSV) einlesen; Kontostände (nur CAMT) landen in ``balances``."""
     if len(data) > MAX_BYTES:
         raise ImportError_("Datei ist zu groß.")
     if data[:2] == b"PK":
@@ -222,11 +237,11 @@ def parse(filename: str, data: bytes) -> list[Txn]:
             if info.is_dir() or info.file_size > MAX_BYTES:
                 continue
             if info.filename.lower().endswith((".xml", ".csv")):
-                out += parse(info.filename, zf.read(info))
+                out += parse(info.filename, zf.read(info), balances)
         if not out:
             raise ImportError_("ZIP enthält keine Kontoauszüge (XML/CSV).")
         return out
     head = data.lstrip()[:200]
     if head.startswith(b"<") or head.startswith(b"\xef\xbb\xbf<"):
-        return parse_camt(data.lstrip(b"\xef\xbb\xbf \r\n\t"))
+        return parse_camt(data.lstrip(b"\xef\xbb\xbf \r\n\t"), balances)
     return parse_csv(data)

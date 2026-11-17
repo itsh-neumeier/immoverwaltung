@@ -115,7 +115,7 @@ def test_reserve_flow_export_confirm_payout():
         assert len(re.findall(r'name="items"', c.get("/admin/reserves").text)) == 2
 
 
-def camt(own_iban, entries):
+def camt(own_iban, entries, opening=None, closing=None):
     """Minimaler camt.052.001.08-Auszug wie aus dem Sparkassen-Export (je Buchung genau ein TxDtls)."""
     ntry = ""
     for i, e in enumerate(entries):
@@ -130,7 +130,15 @@ def camt(own_iban, entries):
 <RmtInf><Ustrd>{e.get('purpose', '')}</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>"""
     return f"""<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.052.001.08">
 <BkToCstmrAcctRpt><GrpHdr><MsgId>1</MsgId><CreDtTm>2026-10-31T00:00:00</CreDtTm></GrpHdr><Rpt><Id>1</Id>
-<Acct><Id><IBAN>{own_iban}</IBAN></Id></Acct>{ntry}</Rpt></BkToCstmrAcctRpt></Document>""".encode()
+<Acct><Id><IBAN>{own_iban}</IBAN></Id></Acct>{bal(opening, "OPBD")}{bal(closing, "CLBD")}{ntry}</Rpt></BkToCstmrAcctRpt></Document>""".encode()
+
+
+def bal(value, kind):
+    if value is None:
+        return ""
+    day, amount = value
+    return (f'<Bal><Tp><CdOrPrtry><Cd>{kind}</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">{abs(amount):.2f}</Amt>'
+            f'<CdtDbtInd>{"DBIT" if amount < 0 else "CRDT"}</CdtDbtInd><Dt><Dt>{day}</Dt></Dt></Bal>')
 
 
 def test_camt_parse_zip_and_csv():
@@ -225,3 +233,88 @@ def test_fixed_reserves_and_bank_reconciliation():
         with SessionLocal() as s:
             stand = {r["name"]: r["total"] for r in reserves.balances(s, s.get(Building, bid))}
         assert stand == {"Grundsteuer": round(3 * 41.5 + 0.12, 2), "Wohngebäudeversicherung": 1235.0}
+
+
+def test_keywords_and_mirror_rules():
+    from app import reserves
+    g = reserves.keyword_groups("", "RÜCKBILDUNG WOHNGEBAEDEVERSICHERUNGZYKLUS P.A.")
+    assert reserves.keyword_score(g, "WOHNGEBÄUDEVERSICHERUNG DATUM 13.07.2026, 10.05 UHR")  # Tippfehler-tolerant
+    opel = reserves.keyword_groups("", "KFZ Steuer Opel Insignia")
+    anh = reserves.keyword_groups("", "KFZ-Steuer Anhaehner")
+    p = "RÜCKBILDUNG KFZ-STEUER ANHAEHNER ZYKLUS P.A."
+    assert reserves.keyword_score(anh, p) > reserves.keyword_score(opel, p)
+    assert reserves.keyword_score(opel, "KFZ STEUER OPEL INSIGNIA GUTSCHRIFT") > \
+        reserves.keyword_score(anh, "KFZ STEUER OPEL INSIGNIA GUTSCHRIFT")
+    tuev = reserves.keyword_groups("", "TÜV Opel Insignia")
+    assert reserves.keyword_score(tuev, "GUTSCHRIFT TÜV OPEL INSIGNIA") > reserves.keyword_score(opel, "GUTSCHRIFT TÜV OPEL INSIGNIA")
+    assert reserves.keyword_score(reserves.keyword_groups("", "Vorwerk Cookidoo"), "AUSZAHLUNG RÜCKBILDUNG COOKIDOO")
+    assert reserves._core("HÜHNERFUTTER          DATUM 19.12.2025, 22.08 UHR") == reserves._core("HÜHNERFUTTER")
+
+
+def test_standing_orders_detect_balances_and_pairing():
+    from app import reserves
+    from app.db import BankLine, ReservePlan
+
+    months = ["2026-07", "2026-08", "2026-09", "2026-10"]
+    res_lines, main_lines = [], []
+    for m in months:
+        for text, amt in (("RÜCKBILDUNG GRUNDSTEUER MUSTERSTR 1 ZYKLUS P.Q.", 50.0),
+                          ("RÜCKBILDUNG KFZ STEUER OPEL INSIGNIA B ZYKLUS P.A.", 10.0)):
+            res_lines.append({"amount": amt, "purpose": text, "date": f"{m}-01"})
+            main_lines.append({"amount": -amt, "purpose": text + " DATUM 01.07.2026, 08.00 UHR", "date": f"{m}-01",
+                               "other": RESERVE})
+        res_lines.append({"amount": 0.37 + len(res_lines) / 100, "purpose": f"Abrechnung {m} siehe Anlage", "date": f"{m}-28"})
+    res_lines.append({"amount": -147.99, "purpose": "GUTSCHRIFT AUS RÜCKBILDUNG GRUNDSTEUER 02.2026 DATUM 02.10.2026, 09.24 UHR",
+                      "date": "2026-10-02"})
+    main_lines.append({"amount": 147.99, "purpose": "GUTSCHRIFT AUS RÜCKBILDUNG GRUNDSTEUER 02.2026", "date": "2026-10-02",
+                       "other": RESERVE})
+    main_lines.append({"amount": 10.0, "purpose": "Erstattung Shop", "date": "2026-10-03", "other": "DE44500105175407324931"})
+
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.account_name, b.reserve_name = b.id, "Timo Muster", "Timo Muster"
+            b.account_iban, b.reserve_iban = GIRO, RESERVE
+            s.commit()
+        c.post("/admin/reserves/bank/import", data={"building": bid},
+               files={"file": ("r.xml", camt(RESERVE, res_lines, ("2026-07-01", 1000.0), ("2026-10-31", 1000.0 + 240 - 147.99 + 1.74)), "application/xml")})
+        r = c.post("/admin/reserves/bank/import", data={"building": bid},
+                   files={"file": ("h.xml", camt(GIRO, main_lines, ("2026-07-01", 50.0), ("2026-11-02", -73.01)), "application/xml")})
+        assert "1 Umsätze des Hauptkontos ohne Bezug" in r.text  # „Erstattung Shop“
+        with SessionLocal() as s:
+            bld = s.get(Building, bid)
+            assert (bld.bank_main_balance, bld.bank_reserve_open) == (-73.01, 1000.0)
+            det = reserves.detect_standing_orders(s, bld)
+        assert [(d["monthly"], d["category"]) for d in det] == [(50.0, "immobilie"), (10.0, "privat")]  # ohne Zinsen
+        page = c.get("/admin/reserves").text
+        assert "Erkannte Daueraufträge (2)" in page
+        c.post("/admin/reserves/plans/detect", data={"building": bid, "keys": [d["key"] for d in det]})
+        r = c.post("/admin/reserves/bank/confirm-sure", data={"building": bid})
+        assert "9 Umsätze zugeordnet" in r.text  # 8 Daueraufträge + 1 Auszahlung; Gegenbuchungen automatisch
+        with SessionLocal() as s:
+            bld = s.get(Building, bid)
+            stand = {r["name"]: r["total"] for r in reserves.balances(s, bld)}
+            assert stand == {"Grundsteuer Musterstr": round(200 - 147.99, 2), "KFZ Steuer Opel Insignia": 40.0}
+            assert all(e.bank_line_id and e.main_line_id for e in s.query(ReserveEntry))  # beide Konten gepaart
+            assert s.query(ReserveEntry).count() == 9  # keine Doppelzählung
+            assert {l.account for l in reserves.open_lines(s, bld)} == {"reserve"}  # nur Zinsen offen
+            plan = s.query(ReservePlan).filter(ReservePlan.standing_order == 50).one()
+            pid = plan.id
+        page = c.get("/admin/reserves").text
+        assert "— bitte wählen —" in page  # Zinsen: kein sicherer Vorschlag, nichts vorausgewählt
+        assert "frei / nicht zugeordnet" in page and "1.093,75" in page  # 1.093,75 Bank − 92,01 Töpfe = 1.001,74
+        assert "1.001,74" in page
+        # Jahresbetrag laut Bescheid eintragen → Hinweis zum Dauerauftrag
+        c.post("/admin/reserves/plan", data={"building": bid, "id": pid, "name": "Grundsteuer", "annual_amount": "591,96",
+                                             "interval": "1", "start": "2026-07", "category": "immobilie",
+                                             "funding": "dauerauftrag", "standing_order": "50", "active": "1"})
+        assert "Dauerauftrag von 50,00 € auf 49,33 € senken" in c.get("/admin/reserves").text
+        # Zuordnung aufheben → erzeugte Buchung weg, Gegenbuchung wieder frei
+        with SessionLocal() as s:
+            line = s.query(BankLine).filter(BankLine.account == "reserve", BankLine.amount == -147.99).one()
+            lid = line.id
+        c.post(f"/admin/reserves/bank/{lid}", data={"action": "unlink"})
+        with SessionLocal() as s:
+            assert s.query(ReserveEntry).count() == 8
+            assert not s.query(BankLine).filter(BankLine.account == "main", BankLine.amount == 147.99).one().entry_ids

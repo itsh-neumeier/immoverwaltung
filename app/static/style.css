@@ -186,3 +186,5 @@ header.area-home{border-top:3px solid #16a34a}
 .bank-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
 .bank-actions select{flex:1 1 260px;width:auto;min-width:0;margin:0}
 .bank-actions button{margin:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.kpi{font-size:1.5rem;font-weight:700}

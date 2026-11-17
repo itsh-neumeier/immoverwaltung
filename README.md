@@ -231,6 +231,13 @@ Weitere Optionen: Rücklagen erst ab einem Abrechnungsmonat, Anteil des Eigentü
 eintragen (monatlich, vierteljährlich, halbjährlich, jährlich). Der Anteil erscheint ab dem Startmonat bei den offenen
 Zuführungen, z. B. `RUECKLAGE GRUNDSTEUER 11/2026 GID: 134 41,50 EUR`, und kommt mit in dieselbe SEPA-Datei.
 
+**Rücklagen-Töpfe für Immobilie und Privates:** Ein Topf läuft entweder als **Dauerauftrag** der Bank (die App
+ordnet die Umsätze per Stichwort zu) oder als **SEPA-Datei** aus der App. „Daueraufträge erkennen“ legt aus den
+regelmäßigen Gutschriften im Kontoauszug die Töpfe an. Je Topf zeigt die Übersicht Soll (Jahresbetrag / 12),
+den aktuellen Dauerauftrag, das Ist der letzten 12 Monate, die Ausgaben und den Stand; weicht der Dauerauftrag vom
+Soll ab, steht ein Hinweis dabei. Die **Kontostände** von Haupt- und Rücklagenkonto kommen aus dem CAMT-Auszug;
+„frei / nicht zugeordnet“ ist der Kontostand minus die Summe der Töpfe.
+
 **Kontoabgleich:** Im Online-Banking die Umsätze von Haupt- und Rücklagenkonto exportieren, als
 **XML (CAMT V8 – gebuchte Umsätze)**, auch als ZIP; CSV geht ebenfalls. Unter „Rücklagen → Kontoabgleich“ hochladen.
 - Das Konto wird an der IBAN erkannt. Vom Hauptkonto werden nur Umsätze mit Bezug zum Rücklagenkonto übernommen.

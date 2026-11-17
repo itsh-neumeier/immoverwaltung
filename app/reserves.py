@@ -32,6 +32,52 @@ class Position:
     ref: str
     name: str
     label: str  # Zweck im Verwendungszweck (Großbuchstaben)
+    groups: list = None  # Stichwort-Gruppen zum Erkennen im Kontoauszug (alle Wörter einer Gruppe müssen vorkommen)
+
+
+STOP = {"RUECKBILDUNG", "RUECKBILDUNGEN", "RUECKLAGE", "RUECKLAGEN", "GUTSCHRIFT", "AUS", "UND", "DER", "DIE", "DAS",
+        "FUER", "MIT", "VON", "BEITRAG", "ABO", "EUR", "DATUM", "UHR", "ALLE", "MONATE", "JAHR", "JAEHRLICH"}
+
+
+def tokens(text: str) -> list[str]:
+    """Bedeutungstragende Wörter (Großbuchstaben, Umlaute ausgeschrieben) – ohne Zyklus-/Datumsangaben."""
+    t = sepa.clean(text or "", 500, umlauts=False).upper()
+    t = re.sub(r"ZYKLUS.*$", "", t)
+    t = re.sub(r"DATUM \d.*$", "", t)
+    words = re.findall(r"[A-Z][A-Z0-9]*|\d*[A-Z]+\d+[A-Z0-9]*", t)
+    return [w for w in words if len(w) >= 3 and w not in STOP]
+
+
+def keyword_groups(*texts: str, explicit: str = "") -> list[list[str]]:
+    """Stichwort-Gruppen: ausdrücklich gepflegte (Komma-getrennt) oder automatisch aus Name/Zweck – jeweils die
+    vollständige Wortliste und ein kurzer Kern (lange Wörter auf 7 Zeichen gekürzt, damit Tippfehler/Varianten
+    wie „WOHNGEBAEDE…“ und „WOHNGEBAEUDE…“ beide passen)."""
+    if explicit.strip():
+        return [g for g in (tokens(x) for x in explicit.split(",")) if g]
+    groups = []
+    for text in texts:
+        words = tokens(text)
+        if not words:
+            continue
+        groups.append(words)
+        head = words[0]
+        core = [head[:7]] if len(head) >= 10 else words[:2]
+        if core != words:
+            groups.append(core)
+        for w in words[1:]:  # lange, eindeutige Wörter reichen allein (z. B. COOKIDOO); spezifischere Gruppen gewinnen
+            if len(w) >= 8 and [w] not in groups:
+                groups.append([w[:7]] if len(w) >= 10 else [w])
+    return groups
+
+
+def keyword_score(groups: list, purpose: str) -> int:
+    """Anzahl Wörter der am besten passenden Gruppe (0 = passt nicht)."""
+    squashed = re.sub(r"[^A-Z0-9]", "", sepa.clean(purpose or "", 500, umlauts=False).upper())
+    best = 0
+    for g in groups or []:
+        if g and all(w in squashed for w in g):
+            best = max(best, sum(len(w) for w in g))
+    return best
 
 
 @dataclass
@@ -64,11 +110,14 @@ def plans(s: Session, building: Optional[Building] = None, active_only: bool = F
 def positions(s: Session, building: Optional[Building] = None) -> dict[str, Position]:
     out = {}
     for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)).order_by(FixedCost.id):
-        out[f"fc:{f.id}"] = Position(f"fc:{f.id}", f.name, (f.reserve_label or f.name).upper())
+        out[f"fc:{f.id}"] = Position(f"fc:{f.id}", f.name, (f.reserve_label or f.name).upper(),
+                                     keyword_groups(f.reserve_label, f.name))
     for a in s.query(Allocation).filter(Allocation.reserve.is_(True)).order_by(Allocation.id):
-        out[f"al:{a.id}"] = Position(f"al:{a.id}", a.name, (a.reserve_label or a.name).upper())
+        out[f"al:{a.id}"] = Position(f"al:{a.id}", a.name, (a.reserve_label or a.name).upper(),
+                                     keyword_groups(a.reserve_label, a.name))
     for p in plans(s, building, active_only=True) if building is not None else []:
-        out[f"rp:{p.id}"] = Position(f"rp:{p.id}", p.name, (p.label or p.name).upper())
+        out[f"rp:{p.id}"] = Position(f"rp:{p.id}", p.name, (p.label or p.name).upper(),
+                                     keyword_groups(p.label, p.name, explicit=p.keywords or ""))
     return out
 
 
@@ -118,7 +167,7 @@ def plan_purpose(p: ReservePlan, month: date, amount: float, building: Optional[
     """z. B. RUECKLAGE GRUNDSTEUER 11/2026 GID: 134 41,50 EUR"""
     span = f"{month:%m/%Y}" if (p.interval or 1) == 1 else \
         f"{month:%m/%Y}-{_add_months(month, (p.interval or 1) - 1):%m/%Y}"
-    code = f"GID: {gid(building.code)} " if building and building.code else ""
+    code = f"GID: {gid(building.code)} " if building and building.code and p.category != "privat" else ""
     return sepa.clean(f"RUECKLAGE {(p.label or p.name).upper()} {span} {code}{_de(amount)} EUR", 140, umlauts=False)
 
 
@@ -128,7 +177,7 @@ def plan_pending(s: Session, building: Building, today: Optional[date] = None) -
     items = []
     for p in plans(s, building, active_only=True):
         start = _month(p.start) or p.created_at.date().replace(day=1)
-        if p.rate < 0.01:
+        if p.rate < 0.01 or p.funding == "dauerauftrag":  # Dauerauftrag führt die Bank aus → nur Abgleich
             continue
         ref = f"rp:{p.id}"
         done = {e.period for e in s.query(ReserveEntry).filter(ReserveEntry.ref == ref, ReserveEntry.kind == "in")}
@@ -205,6 +254,27 @@ def balances(s: Session, building: Building) -> list[dict]:
     return sorted(rows.values(), key=lambda r: r["name"].lower())
 
 
+def plan_stats(s: Session, building: Building, bal: list[dict]) -> list[dict]:
+    """Je Topf: Soll je Monat (Jahresbetrag/12), aktueller Dauerauftrag, Ist der letzten 12 Monate, Stand, Hinweis."""
+    stand = {r["ref"]: r["total"] for r in bal}
+    year_ago = date.fromordinal(date.today().toordinal() - 365)
+    rows = []
+    for p in plans(s, building):
+        ref = f"rp:{p.id}"
+        ins = s.query(ReserveEntry).filter(ReserveEntry.ref == ref, ReserveEntry.amount > 0,
+                                           ReserveEntry.kind == "in").all()
+        ist = round(sum(e.amount for e in ins if e.booking_date and e.booking_date >= year_ago) / 12, 2)
+        outs = sum(-e.amount for e in s.query(ReserveEntry).filter(ReserveEntry.ref == ref, ReserveEntry.amount < 0)
+                   if e.booking_date and e.booking_date >= year_ago)
+        soll = round((p.annual_amount or 0) / 12, 2)
+        hint = ""
+        if p.funding == "dauerauftrag" and p.active and soll and abs((p.standing_order or 0) - soll) >= 0.5:
+            hint = f"Dauerauftrag von {_de(p.standing_order or 0)} € auf {_de(soll)} € {'erhöhen' if soll > (p.standing_order or 0) else 'senken'}"
+        rows.append({"plan": p, "soll": soll, "ist": ist, "out12": round(outs, 2), "stand": stand.get(ref, 0.0),
+                     "hint": hint})
+    return rows
+
+
 def default_exec_date(items: list[Item]) -> date:
     """Ausführung frühestens am nächsten Bankarbeitstag, sonst zur spätesten Fälligkeit der Mieterzahlungen."""
     earliest = sepa.next_business_day()
@@ -236,7 +306,7 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
     bld = _building(s, building)
     lines = open_lines(s, bld)
     cands = {l.id: candidates(s, l) for l in lines}
-    sure = sum(1 for l in lines if cands[l.id] and cands[l.id][0]["score"] == 100)
+    sure = sum(1 for l in lines if cands[l.id] and cands[l.id][0]["score"] >= SURE)
     has_bank = s.query(BankLine.id).filter(BankLine.building_id == bld.id).first() is not None
     missing = [e for e in s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id,
                                                          ReserveEntry.export_id.isnot(None))
@@ -244,6 +314,7 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
                if not (e.bank_line_id or e.main_line_id)] if has_bank else []
     matched_lines = [l for l in s.query(BankLine).filter(BankLine.building_id == bld.id)
                      .order_by(BankLine.booking_date.desc(), BankLine.id.desc()).limit(200) if l.entry_ids or l.ignored]
+    entry_refs = {e.id: e.ref for e in s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id)}
     edit_plan = s.get(ReservePlan, plan) if plan else None
     if edit_plan is not None and edit_plan.building_id != bld.id:
         edit_plan = None
@@ -263,10 +334,14 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
         problems.append("Girokonto und Rücklagenkonto sind identisch.")
     parties = {p.id: p for p in s.query(Party)}
     open_ids = open_exports(s, bld)
-    return _page(request, "reserves.html", open_ids=open_ids, lines=lines, cands=cands, sure=sure, missing=missing,
-                 matched_lines=matched_lines, edit_plan=edit_plan, bld=bld, buildings=scope.filter_query(s.query(Building), Building.id)
+    bal = balances(s, bld)
+    pots_total = round(sum(r["total"] for r in bal), 2)
+    free = round(bld.bank_reserve_balance - pots_total, 2) if bld.bank_reserve_balance is not None else None
+    return _page(request, "reserves.html", open_ids=open_ids, pick=PICK, surescore=SURE, detected=detect_standing_orders(s, bld),
+                 plan_rows=plan_stats(s, bld, bal), pots_total=pots_total, free=free, lines=lines, cands=cands, sure=sure, missing=missing,
+                 matched_lines=matched_lines, entry_refs=entry_refs, edit_plan=edit_plan, bld=bld, buildings=scope.filter_query(s.query(Building), Building.id)
                  .order_by(Building.sort, Building.id).all(), items=items, total=round(sum(i.amount for i in items), 2),
-                 positions=positions(s, bld), names=names, plans=plans(s, bld), intervals=INTERVALS, balances=balances(s, bld), entries=entries, exports=exports,
+                 positions=positions(s, bld), names=names, plans=plans(s, bld), intervals=INTERVALS, balances=bal, entries=entries, exports=exports,
                  exec_date=default_exec_date(items), problems=problems, formats=sepa.FORMATS, kinds=KINDS,
                  parties=parties, dl=dl, fmt_iban=sepa.format_iban, today=date.today())
 
@@ -479,6 +554,10 @@ async def plan_save(request: Request, s: Session = Depends(get_session)):
     start = str(form.get("start", "")).strip()
     p.start = start if _month(start) else f"{date.today():%Y-%m}"
     p.due_note = " ".join(str(form.get("due_note", "")).split())[:120]
+    p.category = "privat" if form.get("category") == "privat" else "immobilie"
+    p.funding = "dauerauftrag" if form.get("funding") == "dauerauftrag" else "sepa"
+    p.keywords = " ".join(str(form.get("keywords", "")).split())[:200]
+    p.standing_order = round(rnd.parse_float(form.get("standing_order")) or 0.0, 2)
     p.active = bool(form.get("active")) or not pid
     if not pid:
         s.add(p)
@@ -506,6 +585,33 @@ def _squash(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", sepa.clean(text or "", 500, umlauts=False).upper())
 
 
+def _core(text: str) -> str:
+    """Verwendungszweck ohne Bank-Zusätze wie „DATUM 19.12.2025, 22.08 UHR“ oder „ANZAHL 5“ (zum Vergleichen)."""
+    t = sepa.clean(text or "", 500, umlauts=False).upper()
+    t = re.sub(r"DATUM\s*\d\d\.\d\d\.\d{4},?\s*\d\d[.:]\d\d\s*UHR", " ", t)
+    t = re.sub(r"ANZAHL\s*\d+", " ", t)
+    return re.sub(r"[^A-Z0-9]", "", t)
+
+
+def _is_mirror(a: BankLine, b: BankLine, bld: Optional[Building]) -> bool:
+    """Gleiche Umbuchung auf beiden eigenen Konten: Betrag gegengleich, zeitnah und gleicher Zweck – oder das
+    Gegenkonto ist jeweils das andere eigene Konto."""
+    if a.account == b.account or abs(a.amount + b.amount) > 0.005 or not _near(a.booking_date, b.booking_date, 7):
+        return False
+    if (a.e2e and a.e2e == b.e2e) or (_core(a.purpose) and _core(a.purpose) == _core(b.purpose)):
+        return True
+    if bld is None:
+        return False
+    own = {"main": sepa.normalize_iban(bld.account_iban), "reserve": sepa.normalize_iban(bld.reserve_iban)}
+    return (_near(a.booking_date, b.booking_date, 3) and sepa.normalize_iban(a.iban) == own[b.account]
+            and sepa.normalize_iban(b.iban) == own[a.account])
+
+
+OTHER = {"bank_line_id": "main_line_id", "main_line_id": "bank_line_id"}
+SURE = 95  # ab diesem Trefferwert: „eindeutig“ (gesammelt bestätigen)
+PICK = 90  # ab diesem Wert ist der Vorschlag vorausgewählt
+
+
 def _side(line: BankLine) -> tuple[str, str]:
     """(Art der Buchung, Feld) passend zum Umsatz: Rücklagenkonto + = Zuführung, − = Auszahlung;
     Hauptkonto − = Zuführung (Abbuchung), + = Auszahlung (Gutschrift)."""
@@ -514,34 +620,69 @@ def _side(line: BankLine) -> tuple[str, str]:
     return ("in" if line.amount < 0 else "out"), "main_line_id"
 
 
-def candidates(s: Session, line: BankLine, limit: int = 40) -> list[dict]:
-    """Passende Buchungen bzw. ganze SEPA-Dateien (Sammelbuchung) mit Trefferwert, beste zuerst."""
+def _signed(line: BankLine) -> float:
+    """Betrag aus Sicht des Rücklagenkontos (+ Zuführung, − Auszahlung)."""
+    return round(line.amount if line.account == "reserve" else -line.amount, 2)
+
+
+def _near(a: Optional[date], b: Optional[date], days: int = 7) -> bool:
+    return a is not None and b is not None and abs((a - b).days) <= days
+
+
+def candidates(s: Session, line: BankLine, limit: int = 60) -> list[dict]:
+    """Vorschläge, beste zuerst: Überweisung aus einer App-Datei (Referenz/Zweck), Gegenbuchung auf dem anderen
+    Konto, ganze SEPA-Datei (Sammelbuchung) oder Rücklagen-Topf (Stichworte, z. B. Dauerauftrag).
+    Ein gleicher Betrag allein reicht nicht für einen Vorschlag."""
     kind, fld = _side(line)
+    other_fld = OTHER[fld]
     amount = round(abs(line.amount), 2)
-    out = []
-    entries = s.query(ReserveEntry).filter(ReserveEntry.building_id == line.building_id, ReserveEntry.kind == kind,
-                                           ReserveEntry.export_id.isnot(None),
-                                           getattr(ReserveEntry, fld).is_(None)).all()
     purpose = _squash(line.purpose)
-    for e in entries:
+    out = []
+    q = s.query(ReserveEntry).filter(ReserveEntry.building_id == line.building_id, ReserveEntry.kind == kind,
+                                     getattr(ReserveEntry, fld).is_(None))
+    others = {}
+    for e in q:
+        other_id = getattr(e, other_fld)
+        if e.export_id is None and other_id is None:
+            continue  # manuelle Buchung ohne Kontobezug (z. B. Anfangsbestand)
+        same_amount = abs(abs(e.amount) - amount) < 0.005
         score = 0
         if line.e2e and e.e2e and line.e2e == e.e2e:
             score = 100
-        elif abs(abs(e.amount) - amount) < 0.005:
-            score = 90 if purpose and _squash(e.note) and _squash(e.note) in purpose else 40
+        elif same_amount and other_id is not None:
+            o = others.get(other_id) or s.get(BankLine, other_id)
+            others[other_id] = o
+            if o is not None and _is_mirror(o, line, s.get(Building, line.building_id)):
+                score = 98  # Gegenbuchung (z. B. Dauerauftrag: Abbuchung Hauptkonto ↔ Gutschrift Rücklagenkonto)
+            elif o is not None and _near(o.booking_date, line.booking_date):
+                score = 60
+        elif same_amount and purpose and _squash(e.note) and _squash(e.note) in purpose:
+            score = 90
+        elif same_amount:
+            score = 20
         if score:
             out.append({"value": f"e:{e.id}", "score": score, "amount": abs(e.amount), "date": e.booking_date,
                         "text": e.note or e.name})
-    exports = s.query(SepaExport).filter(SepaExport.building_id == line.building_id,
-                                         SepaExport.kind == kind).order_by(SepaExport.id.desc()).limit(50).all()
-    for ex in exports:  # Sammelbuchung: ganze Datei auf einmal
-        ids = [e for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id)
-               if getattr(e, fld) is None]
-        if len(ids) < 2 or abs(ex.total - amount) > 0.005:
+    for ex in s.query(SepaExport).filter(SepaExport.building_id == line.building_id,
+                                         SepaExport.kind == kind).order_by(SepaExport.id.desc()).limit(50):
+        es = [e for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id) if getattr(e, fld) is None]
+        if len(es) < 2 or abs(sum(abs(e.amount) for e in es) - amount) > 0.005:
             continue
         score = 100 if line.pmtinf and line.pmtinf.startswith(ex.msg_id) else 60
-        out.append({"value": f"x:{ex.id}", "score": score, "amount": ex.total, "date": ex.exec_date,
-                    "text": f"SEPA-Datei {ex.filename} ({ex.count} Überweisungen, Sammelbuchung)"})
+        out.append({"value": f"x:{ex.id}", "score": score, "amount": round(sum(abs(e.amount) for e in es), 2),
+                    "date": ex.exec_date, "text": f"SEPA-Datei {ex.filename} ({len(es)} Überweisungen, Sammelbuchung)"})
+    # Rücklagen-Topf nach Stichworten (nur Umsätze mit Bezug zum Rücklagenkonto)
+    bld = s.get(Building, line.building_id)
+    if line.account == "reserve" or sepa.normalize_iban(line.iban) == sepa.normalize_iban(bld.reserve_iban if bld else ""):
+        what = "Zuführung" if _signed(line) > 0 else "Auszahlung"
+        scored = sorted(((keyword_score(p.groups, line.purpose), p) for p in positions(s, bld).values()),
+                        key=lambda x: -x[0])
+        top = scored[0][0] if scored else 0
+        sure = top > 0 and sum(1 for sc, _ in scored if sc == top) == 1
+        for sc, p in scored:
+            score = (SURE if sure else 80) if sc and sc == top else (70 if sc else 1)
+            out.append({"value": f"p:{p.ref}", "score": score, "amount": amount, "date": line.booking_date,
+                        "text": f"→ {what} „{p.name}“ buchen"})
     out.sort(key=lambda c: (-c["score"], c["date"] or date.min))
     return out[:limit]
 
@@ -557,11 +698,42 @@ def _finish_exports(s: Session, export_ids: set) -> int:
     return done
 
 
+def _pair_mirror(s: Session, e: ReserveEntry, line: BankLine) -> None:
+    """Gegenbuchung auf dem anderen Konto gleich mit zuordnen (gleicher Betrag, gleicher Zweck, ±7 Tage)."""
+    other_fld = OTHER["bank_line_id" if line.account == "reserve" else "main_line_id"]
+    if getattr(e, other_fld) is not None:
+        return
+    other_acc = "main" if line.account == "reserve" else "reserve"
+    bld = s.get(Building, line.building_id)
+    for o in s.query(BankLine).filter(BankLine.building_id == line.building_id, BankLine.account == other_acc,
+                                      BankLine.ignored.is_(False)):
+        if not o.entry_ids and _is_mirror(o, line, bld):
+            setattr(e, other_fld, o.id)
+            o.entry_ids = [e.id]
+            return
+
+
 def link(s: Session, line: BankLine, value: str) -> int:
-    """Umsatz mit Buchung (e:<id>) oder ganzer SEPA-Datei (x:<id>) verknüpfen. Liefert Anzahl verknüpfter Buchungen."""
+    """Umsatz verknüpfen: Buchung (e:<id>), ganze SEPA-Datei (x:<id>) oder neuer Eintrag im Topf (p:<ref>)."""
     kind, fld = _side(line)
-    m = re.fullmatch(r"([ex]):(\d+)", value or "")
+    m = re.fullmatch(r"([exp]):(.+)", value or "")
     if not m:
+        return 0
+    if m[1] == "p":
+        ref = m[2]
+        names = all_positions(s)
+        if ref not in names:
+            return 0
+        amount = _signed(line)
+        e = ReserveEntry(building_id=line.building_id, ref=ref, name=names[ref], booking_date=line.booking_date,
+                         amount=amount, kind="in" if amount > 0 else "out", note=sepa.clean(line.purpose, 140))
+        setattr(e, fld, line.id)
+        s.add(e)
+        s.flush()
+        line.entry_ids = [e.id]
+        _pair_mirror(s, e, line)
+        return 1
+    if not m[2].isdigit():
         return 0
     if m[1] == "e":
         es = [s.get(ReserveEntry, int(m[2]))]
@@ -571,9 +743,11 @@ def link(s: Session, line: BankLine, value: str) -> int:
           and getattr(e, fld) is None]
     for e in es:
         setattr(e, fld, line.id)
-        if line.booking_date:
+        if line.booking_date and e.export_id:
             e.booking_date = line.booking_date
     line.entry_ids = sorted(set(line.entry_ids or []) | {e.id for e in es})
+    if len(es) == 1:
+        _pair_mirror(s, es[0], line)
     _finish_exports(s, {e.export_id for e in es if e.export_id})
     return len(es)
 
@@ -583,27 +757,100 @@ def open_lines(s: Session, building: Building) -> list[BankLine]:
             .order_by(BankLine.booking_date.desc(), BankLine.id.desc()) if not l.entry_ids]
 
 
+def detect_standing_orders(s: Session, building: Building) -> list[dict]:
+    """Wiederkehrende Gutschriften auf dem Rücklagenkonto (mind. 3 Monate, gleicher Zweck) als Vorschlag für Töpfe –
+    ohne die, die schon zu einem Topf passen und ohne Überweisungen der App."""
+    groups: dict[str, list] = {}
+    for l in s.query(BankLine).filter(BankLine.building_id == building.id, BankLine.account == "reserve",
+                                      BankLine.amount > 0):
+        sq = _squash(l.purpose)
+        if sq.startswith("RUECKLAGEAUSNEBENKOSTEN") or "SIEHEANLAGE" in sq or not tokens(l.purpose):
+            continue  # App-Überweisungen und Rechnungsabschluss (Zinsen/Entgelte) sind keine Daueraufträge
+        groups.setdefault(" ".join(tokens(l.purpose)), []).append(l)
+    pos = positions(s, building).values()
+    out = []
+    for key, ls in groups.items():
+        months = {l.booking_date.strftime("%Y-%m") for l in ls if l.booking_date}
+        if len(months) < 3 or any(keyword_score(p.groups, ls[0].purpose) for p in pos):
+            continue
+        amounts = sorted((l.amount for l in ls), key=lambda a: -sum(1 for x in ls if x.amount == a))
+        monthly = amounts[0]
+        if sum(1 for l in ls if l.amount == monthly) < 3:
+            continue  # kein fester Betrag
+        text = sepa.clean(ls[-1].purpose, 200).upper()
+        cyc = re.search(r"ZYKLUS\s*(.*)$", text)
+        cyc = (cyc.group(1) if cyc else "").replace(" ", "")
+        due = {"P.A.": "jährlich", "PA": "jährlich", "P.A": "jährlich", "P.S.": "jährlich", "2J": "alle 2 Jahre",
+               "P.Q.": "vierteljährlich", "PQ": "vierteljährlich", "P.H.": "halbjährlich", "P.M.": "monatlich"}.get(cyc, cyc.lower())
+        if "4MONATE" in text.replace(" ", ""):
+            due = "alle 4 Monate"
+        name = " ".join(w.capitalize() if len(w) > 3 else w for w in tokens(ls[-1].purpose))
+        immo = re.search(r"GRUNDSTEUER|WOHNGEB|STROMZ|WASSER|KAMIN|MUELL|ABFALL|HAUS|GEBAEUDE", key)
+        out.append({"key": key, "name": name, "monthly": monthly, "count": len(ls), "months": len(months),
+                    "first": min(months), "last": max(months), "due": due,
+                    "category": "immobilie" if immo else "privat", "total": round(sum(l.amount for l in ls), 2)})
+    return sorted(out, key=lambda x: -x["monthly"])
+
+
+@router.post("/admin/reserves/plans/detect")
+async def plans_detect(request: Request, s: Session = Depends(get_session)):
+    """Erkannte Daueraufträge als Töpfe anlegen (Dauerauftrag, Jahresbetrag = 12 × Monatsbetrag)."""
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    chosen = set(form.getlist("keys"))
+    n = 0
+    for d in detect_standing_orders(s, bld):
+        if d["key"] not in chosen:
+            continue
+        s.add(ReservePlan(building_id=bld.id, name=d["name"][:200], label=d["key"][:60], annual_amount=d["monthly"] * 12,
+                          interval=1, start=d["first"], due_note=d["due"][:120], category=d["category"],
+                          funding="dauerauftrag", keywords="", standing_order=d["monthly"], active=True))
+        n += 1
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}#abgleich",
+                     f"{n} Töpfe angelegt – jetzt „eindeutige Treffer bestätigen“, um die Kontoumsätze zuzuordnen.")
+
+
+def _store_balances(bld: Building, balances: list, ibans: dict) -> None:
+    for b in balances:
+        acc = ibans.get(sepa.normalize_iban(b.account_iban))
+        if acc is None or b.day is None:
+            continue
+        if b.kind == "CLBD":
+            if acc == "main" and (bld.bank_main_date is None or b.day >= bld.bank_main_date):
+                bld.bank_main_balance, bld.bank_main_date = b.amount, b.day
+            if acc == "reserve" and (bld.bank_reserve_date is None or b.day >= bld.bank_reserve_date):
+                bld.bank_reserve_balance, bld.bank_reserve_date = b.amount, b.day
+        if b.kind == "OPBD" and acc == "reserve" and (bld.bank_reserve_open_date is None
+                                                      or b.day < bld.bank_reserve_open_date):
+            bld.bank_reserve_open, bld.bank_reserve_open_date = b.amount, b.day
+
+
 @router.post("/admin/reserves/bank/import")
 async def bank_import(request: Request, file: UploadFile, s: Session = Depends(get_session)):
     form = await request.form()
     bld = _building(s, form.get("building"))
     back = f"/admin/reserves?building={bld.id}#abgleich"
     data = await file.read()
+    bals: list = []
     try:
-        txns = bankimport.parse(file.filename or "", data)
+        txns = bankimport.parse(file.filename or "", data, bals)
     except bankimport.ImportError_ as e:
         return _redirect(back, f"Import fehlgeschlagen: {e}")
     main_iban, reserve_iban = sepa.normalize_iban(bld.account_iban), sepa.normalize_iban(bld.reserve_iban)
     accounts_ = {main_iban: "main", reserve_iban: "reserve"}
     accounts_.pop("", None)
-    first = s.query(SepaExport.created_at).filter(SepaExport.building_id == bld.id).order_by(SepaExport.id).first()
-    cutoff = date.fromordinal(first[0].date().toordinal() - 30) if first else None
+    since = _date(form.get("since"), date.min) if form.get("since") else None
+    _store_balances(bld, bals, accounts_)
     new = skipped = foreign = irrelevant = old = 0
     seen = {d for (d,) in s.query(BankLine.digest).filter(BankLine.building_id == bld.id)}
     for t in txns:
         acc = accounts_.get(sepa.normalize_iban(t.account_iban))
         if acc is None:
             foreign += 1
+            continue
+        if since and t.booking_date and t.booking_date < since:
+            old += 1
             continue
         if acc == "main" and not (sepa.normalize_iban(t.iban) == reserve_iban or t.e2e.startswith("RL")
                                   or t.pmtinf.startswith("IMV")):
@@ -613,24 +860,24 @@ async def bank_import(request: Request, file: UploadFile, s: Session = Depends(g
             skipped += 1
             continue
         seen.add(t.digest)
-        too_old = cutoff is not None and t.booking_date is not None and t.booking_date < cutoff
-        old += too_old
         s.add(BankLine(building_id=bld.id, account=acc, booking_date=t.booking_date, amount=t.amount,
                        purpose=t.purpose[:2000], name=t.name[:200], iban=t.iban[:34], e2e=t.e2e[:100],
                        pmtinf=t.pmtinf[:100], batch_count=t.batch_count, info=t.info[:100], digest=t.digest,
-                       source=t.source[:20], ignored=too_old))
+                       source=t.source[:20]))
         new += 1
     s.commit()
     msg = f"{new} Umsätze eingelesen"
     if old:
-        msg += f" ({old} davon vor Beginn der SEPA-Dateien – ausgeblendet)"
+        msg += f", {old} vor dem gewählten Datum übersprungen"
     if irrelevant:
         msg += f", {irrelevant} Umsätze des Hauptkontos ohne Bezug zum Rücklagenkonto übersprungen"
     if skipped:
         msg += f", {skipped} schon vorhanden"
     if foreign:
         msg += f", {foreign} von anderen Konten übersprungen (IBAN passt weder zu Haupt- noch Rücklagenkonto)"
-    sure = sum(1 for l in open_lines(s, bld) if (c := candidates(s, l, 1)) and c[0]["score"] == 100)
+    if bals:
+        msg += " · Kontostände aktualisiert"
+    sure = sum(1 for l in open_lines(s, bld) if (c := candidates(s, l, 1)) and c[0]["score"] >= SURE)
     if sure:
         msg += f" · {sure} eindeutige Treffer – bitte prüfen und bestätigen"
     return _redirect(back, msg)
@@ -642,8 +889,10 @@ async def bank_confirm_sure(request: Request, s: Session = Depends(get_session))
     bld = _building(s, form.get("building"))
     lines = n = 0
     for l in open_lines(s, bld):
+        if l.entry_ids:  # schon als Gegenbuchung mit zugeordnet
+            continue
         c = candidates(s, l, 1)
-        if c and c[0]["score"] == 100:
+        if c and c[0]["score"] >= SURE:
             k = link(s, l, c[0]["value"])
             lines += bool(k)
             n += k
@@ -658,7 +907,8 @@ async def bank_hide_rest(request: Request, s: Session = Depends(get_session)):
     bld = _building(s, form.get("building"))
     n = 0
     for l in open_lines(s, bld):
-        if not candidates(s, l, 1):
+        c = candidates(s, l, 1)
+        if not c or c[0]["score"] < PICK:
             l.ignored = True
             n += 1
     s.commit()
@@ -679,24 +929,24 @@ async def bank_line_action(request: Request, lid: int, s: Session = Depends(get_
         return _redirect(back, "Umsatz ausgeblendet")
     if action == "unlink":
         kind, fld = _side(line)
-        for e in s.query(ReserveEntry).filter(getattr(ReserveEntry, fld) == line.id):
-            setattr(e, fld, None)
+        for e in s.query(ReserveEntry).filter(getattr(ReserveEntry, fld) == line.id).all():
+            other_id = getattr(e, OTHER[fld])
+            if e.export_id is None:  # aus dem Umsatz erzeugt → wieder entfernen, Gegenbuchung freigeben
+                if other_id and (o := s.get(BankLine, other_id)) is not None:
+                    o.entry_ids = [x for x in (o.entry_ids or []) if x != e.id]
+                s.delete(e)
+            else:
+                setattr(e, fld, None)
         line.entry_ids, line.ignored = [], False
         s.commit()
         return _redirect(back, "Zuordnung aufgehoben")
-    if action == "book":  # z. B. Zinsen oder Überweisung von Hand → als Buchung übernehmen (nur Rücklagenkonto)
+    if action == "book":  # Umsatz einem Topf zubuchen (z. B. Zinsen, Dauerauftrag, frühere Gutschrift)
         ref = str(form.get("ref", ""))
         names = all_positions(s)
-        if line.account != "reserve" or ref not in names:
-            return _redirect(back, "Bitte eine Position wählen (nur für Umsätze des Rücklagenkontos).")
-        e = ReserveEntry(building_id=line.building_id, ref=ref, name=names[ref], booking_date=line.booking_date,
-                         amount=line.amount, kind="in" if line.amount > 0 else "out",
-                         note=sepa.clean(f"{line.name} {line.purpose}", 140), bank_line_id=line.id)
-        s.add(e)
-        s.flush()
-        line.entry_ids = [e.id]
+        if ref not in names or not link(s, line, f"p:{ref}"):
+            return _redirect(back, "Bitte einen Topf wählen.")
         s.commit()
-        return _redirect(back, f"Als {'Zuführung' if line.amount > 0 else 'Auszahlung'} gebucht ({names[ref]})")
+        return _redirect(back, f"Als {'Zuführung' if _signed(line) > 0 else 'Auszahlung'} gebucht ({names[ref]})")
     n = link(s, line, str(form.get("match", "")))
     s.commit()
     return _redirect(back, f"{n} Buchung(en) zugeordnet" if n else "Bitte eine passende Buchung auswählen.")
