@@ -297,6 +297,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   {% endif %}
   {% if matched_lines %}
   <details style="margin-top:8px"><summary class="muted">Zugeordnete / ausgeblendete Umsätze ({{ matched_lines|length }})</summary>
+  {% if matched_lines|selectattr('ignored')|list %}<form method="post" action="/admin/reserves/bank/unhide-all" style="margin:8px 0">
+    <input type="hidden" name="building" value="{{ bld.id }}"><button class="sec">Alle ausgeblendeten wieder einblenden</button></form>{% endif %}
   <div class="scroll"><table>
     {% for l in matched_lines %}<tr><td>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</td>
       <td>{{ 'Hauptkonto' if l.account == 'main' else 'Rücklagenkonto' }}</td><td class="r">{{ l.amount|eur }}</td>

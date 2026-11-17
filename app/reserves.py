@@ -915,6 +915,16 @@ async def bank_hide_rest(request: Request, s: Session = Depends(get_session)):
     return _redirect(f"/admin/reserves?building={bld.id}#abgleich", f"{n} Umsätze ohne Vorschlag ausgeblendet")
 
 
+@router.post("/admin/reserves/bank/unhide-all")
+async def bank_unhide_all(request: Request, s: Session = Depends(get_session)):
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    n = s.query(BankLine).filter(BankLine.building_id == bld.id, BankLine.ignored.is_(True)) \
+        .update({BankLine.ignored: False})
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}#abgleich", f"{n} Umsätze wieder eingeblendet")
+
+
 @router.post("/admin/reserves/bank/{lid}")
 async def bank_line_action(request: Request, lid: int, s: Session = Depends(get_session)):
     line = s.get(BankLine, lid)

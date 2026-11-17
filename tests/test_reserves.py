@@ -303,6 +303,8 @@ def test_standing_orders_detect_balances_and_pairing():
             pid = plan.id
         page = c.get("/admin/reserves").text
         assert "— bitte wählen —" in page  # Zinsen: kein sicherer Vorschlag, nichts vorausgewählt
+        assert "4 Umsätze ohne Vorschlag ausgeblendet" in c.post("/admin/reserves/bank/hide-rest", data={"building": bid}).text
+        assert "4 Umsätze wieder eingeblendet" in c.post("/admin/reserves/bank/unhide-all", data={"building": bid}).text
         assert "frei / nicht zugeordnet" in page and "1.093,75" in page  # 1.093,75 Bank − 92,01 Töpfe = 1.001,74
         assert "1.001,74" in page
         # Jahresbetrag laut Bescheid eintragen → Hinweis zum Dauerauftrag
