@@ -78,6 +78,7 @@ class Party(Base):
     phone: Mapped[str] = mapped_column(String(50), default="")  # WhatsApp-Nummer
     channel: Mapped[str] = mapped_column(String(20), default="email")  # email | whatsapp | both
     meters: Mapped[list] = mapped_column(JSON, default=list)  # Shelly-Energie-Entitäten
+    area: Mapped[float] = mapped_column(Float, default=0.0)  # Wohnfläche in m² (Verteilschlüssel)
     is_owner: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort: Mapped[int] = mapped_column(Integer, default=0)
@@ -313,6 +314,7 @@ class FixedCost(Base):
     amount_gross: Mapped[float] = mapped_column(Float, default=0.0)
     party_ids: Mapped[list] = mapped_column(JSON, default=list)  # leer = alle
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    split: Mapped[str] = mapped_column(String(10), default="equal")  # equal (gleichmäßig) | area (nach Wohnfläche)
     reserve: Mapped[bool] = mapped_column(Boolean, default=False)  # zeitversetzt bezahlt → Rücklage bilden
     reserve_label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. IPTV
     payee_rules: Mapped[str] = mapped_column(String(400), default="")  # Rechnung kommt von … (Hauptkonto, für Gutschriften)

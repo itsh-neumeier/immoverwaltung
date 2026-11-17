@@ -52,6 +52,7 @@ class FixedCostCfg:
     amount_gross: float
     party_ids: list[int] = field(default_factory=list)  # leer = alle Parteien
     id: int = 0
+    areas: dict[int, float] = field(default_factory=dict)  # gesetzt = nach Wohnfläche (m²) statt gleichmäßig
 
 
 @dataclass
@@ -63,7 +64,7 @@ class AllocationCfg:
     amount: float = 0.0  # bei "amount": Betrag; bei "quantity": Preis je Einheit (brutto)
     source_unit: str = ""  # Einheit der Menge bei "quantity", z. B. m³
     price_parts: list[tuple[str, float]] = field(default_factory=list)  # z. B. [("Wasser", 2.1), ("Abwasser", 2.7)]
-    key_type: str = "equal"  # "entity" | "percent" | "equal"
+    key_type: str = "equal"  # "entity" | "percent" | "area" (Wohnfläche m²) | "equal"
     key: dict[int, str | float] = field(default_factory=dict)
     key_unit: str = ""
 
@@ -175,6 +176,19 @@ def _split_equal(amount: float, n: int) -> list[float]:
     cents = round(amount * 100)
     base, rest = divmod(cents, n)
     return [(base + (1 if i < rest else 0)) / 100 for i in range(n)]
+
+
+def _split_weighted(amount: float, weights: list[float]) -> list[float]:
+    """Teilt einen Betrag centgenau nach Gewichten (z. B. m²) auf; Rundungsrest geht an die größten Anteile."""
+    total = sum(weights)
+    if total <= 0:
+        return _split_equal(amount, len(weights))
+    cents = round(amount * 100)
+    raw = [cents * w / total for w in weights]
+    parts = [int(x) for x in raw]
+    for i in sorted(range(len(raw)), key=lambda i: raw[i] - parts[i], reverse=True)[:cents - sum(parts)]:
+        parts[i] += 1
+    return [c / 100 for c in parts]
 
 
 def missing_entities(required: list[str], values: dict[str, Optional[float]]) -> list[str]:
@@ -358,7 +372,20 @@ def compute(
     # --- weitere Fixkosten -------------------------------------------------------
     for fc in fixed_costs:
         targets = [p for p in parties if not fc.party_ids or p.id in fc.party_ids]
+        if fc.areas:  # nach Wohnfläche: nur Parteien mit Fläche
+            targets = [p for p in targets if fc.areas.get(p.id)]
+            if not targets:
+                warnings.append(f"Fixkosten „{fc.name}“ nach Wohnfläche: keine Partei mit Wohnfläche (m²) hinterlegt.")
+                continue
         if not targets or not fc.amount_gross:
+            continue
+        if fc.areas:
+            areas = [fc.areas[p.id] for p in targets]
+            total_area = sum(areas)
+            for p, part, area in zip(targets, _split_weighted(fc.amount_gross, areas), areas):
+                note = (f"{_de(area)} m² von {_de(total_area)} m² ({_pct(area / total_area)}) von "
+                        f"{_de(fc.amount_gross)} €")
+                lines[p.id].append(Line(fc.name, part, note=note, group="fix", ref=f"fc:{fc.id}" if fc.id else ""))
             continue
         for p, part in zip(targets, _split_equal(fc.amount_gross, len(targets))):
             note = f"{_de(fc.amount_gross)} € / {len(targets)} Parteien" if len(targets) > 1 else ""
@@ -396,7 +423,7 @@ def compute(
         if a.key_type == "entity":
             targets = [p for p in parties if a.key.get(p.id)]
             weights = {p.id: _sum(values, str(a.key[p.id])) or 0.0 for p in targets}
-        elif a.key_type == "percent":
+        elif a.key_type in ("percent", "area"):
             targets = [p for p in parties if a.key.get(p.id)]
             weights = {p.id: float(a.key[p.id]) for p in targets}
         else:
@@ -416,6 +443,8 @@ def compute(
             if a.key_type == "entity":
                 qty = f"{_de(weights[p.id])} {a.key_unit} von {_de(wsum)} {a.key_unit}"
                 note = f"{qty} ({_pct(frac)}) von {pot_desc}"
+            elif a.key_type == "area":
+                note = f"{_de(weights[p.id])} m² von {_de(wsum)} m² Wohnfläche ({_pct(frac)}) von {pot_desc}"
             else:
                 note = f"{_pct(frac)} von {pot_desc}"
             amount = pot * frac

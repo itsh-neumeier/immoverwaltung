@@ -29,6 +29,7 @@
       <select name="key_type" id="key">
         <option value="percent" {% if a.key_type=='percent' %}selected{% endif %}>Feste Prozente</option>
         <option value="entity" {% if a.key_type=='entity' %}selected{% endif %}>Verbrauch je Partei aus HA-Entität</option>
+        <option value="area" {% if a.key_type=='area' %}selected{% endif %}>Nach Wohnfläche (m²)</option>
         <option value="equal" {% if a.key_type=='equal' %}selected{% endif %}>Gleichmäßig auf alle</option>
       </select>
     </div>
@@ -36,11 +37,17 @@
   </div>
   <p class="muted" data-key="percent">Prozent je Partei eintragen (leer = nimmt nicht teil). Summe sollte 100 % ergeben, sonst wird anteilig normiert.</p>
   <p class="muted" data-key="entity">Je Partei einen Zähler wählen – 1 Entität oder 3 Phasen (leer = nimmt nicht teil).</p>
+  <p class="muted" data-key="area">Anteil = Wohnfläche der Partei / Summe der beteiligten Wohnflächen. Die m² stehen bei der jeweiligen
+  <a href="/admin/parties">Partei</a>. Haken = nimmt teil (keiner gesetzt = alle Parteien mit Wohnfläche).</p>
   {% for p in parties %}
   {% set kv = (a.key or {}).get(p.id|string, '') %}
   <div data-key="percent">
     <label>{{ p.name }}{% if p.unit_id %} ({{ p.unit_id }}){% endif %} – Prozent</label>
     <input type="text" name="keypct_{{ p.id }}" value="{{ kv|string|replace('.', ',') if a.key_type == 'percent' and kv != '' else '' }}" data-keyfield placeholder="z. B. 40">
+  </div>
+  <div data-key="area" class="check">
+    <input type="checkbox" name="keyarea_{{ p.id }}" id="ka{{ p.id }}" value="1" {% if p.area and (a.key_type != 'area' or not a.key or p.id|string in a.key) %}checked{% endif %} {% if not p.area %}disabled{% endif %}>
+    <label for="ka{{ p.id }}" style="margin:0">{{ p.name }}{% if p.unit_id %} ({{ p.unit_id }}){% endif %} – {{ (p.area|num(2) ~ ' m²') if p.area else 'keine Wohnfläche hinterlegt' }}</label>
   </div>
   <div data-key="entity">
     <label>{{ p.name }}{% if p.unit_id %} ({{ p.unit_id }}){% endif %} – Zähler</label>

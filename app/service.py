@@ -244,6 +244,13 @@ def fetch_message(missing: dict[str, str]) -> str:
     return "Werte geladen – fehlend: " + "; ".join(f"{e} ({why})" for e, why in missing.items())
 
 
+def area_key(parties, selection: Optional[dict] = None) -> dict[int, float]:
+    """Verteilschlüssel Wohnfläche: {Partei-ID: m²} für Parteien mit Fläche; ``selection`` (IDs aus der Umlage)
+    schränkt ein, leer = alle Parteien mit Fläche."""
+    chosen = {str(k) for k, v in (selection or {}).items() if v}
+    return {p.id: float(p.area) for p in parties if (p.area or 0) > 0 and (not chosen or str(p.id) in chosen)}
+
+
 def recompute(s: Session, b: Billing) -> dict:
     st = get_settings(s)
     db_parties = active_parties(s, b.building_id)
@@ -254,7 +261,7 @@ def recompute(s: Session, b: Billing) -> dict:
     ]
     fixed = [
         calc.FixedCostCfg(name=f.name, amount_gross=f.amount_gross, party_ids=[int(x) for x in f.party_ids or []],
-                          id=f.id)
+                          id=f.id, areas=area_key(db_parties) if f.split == "area" else {})
         for f in s.query(FixedCost).filter(FixedCost.active.is_(True)).order_by(FixedCost.id).all()
     ]
     allocs = []
@@ -268,7 +275,8 @@ def recompute(s: Session, b: Billing) -> dict:
                 amount=float(amount or 0), source_unit=a.source_unit or "", price_parts=parts,
                 key_type=a.key_type,
                 key_unit=a.key_unit,
-                key={int(k): v for k, v in (a.key or {}).items() if v not in ("", None)},
+                key=(area_key(db_parties, a.key) if a.key_type == "area"
+                     else {int(k): v for k, v in (a.key or {}).items() if v not in ("", None)}),
             )
         )
     bill = calc.BillCfg(
@@ -845,6 +853,8 @@ def daily_report(s: Session, b: Billing, st: dict, db_parties: list, allocs: lis
         else:
             if a.key_type == "percent":
                 weights = {pid: float(v) for pid, v in a.key.items() if v}
+            elif a.key_type == "area":
+                weights = {str(pid): w for pid, w in area_key(db_parties, a.key).items()}
             else:
                 weights = {p.id: 1.0 for p in db_parties}
             wsum = sum(weights.values())

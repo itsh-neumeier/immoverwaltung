@@ -776,6 +776,7 @@ async def party_save(request: Request, pid: int, s: Session = Depends(get_sessio
     p.building_id = _pick_building(s, form.get("building_id") or p.building_id)
     p.name = str(form.get("name", "")).strip()
     p.unit = str(form.get("unit", "")).strip()
+    p.area = round(max(parse_float(form.get("area")) or 0.0, 0.0), 2)
     p.unit_id = str(form.get("unit_id", "")).strip()
     p.address = str(form.get("address", "")).strip()
     p.email = str(form.get("email", "")).strip()
@@ -831,6 +832,7 @@ async def fixed_save(request: Request, cid: int, s: Session = Depends(get_sessio
     c.amount_gross = parse_float(form.get("amount_gross")) or 0.0
     c.party_ids = [int(x) for x in form.getlist("party_ids")]
     c.active = bool(form.get("active"))
+    c.split = "area" if form.get("split") == "area" else "equal"
     c.reserve = bool(form.get("reserve"))
     c.reserve_label = " ".join(str(form.get("reserve_label", "")).split())[:60]
     c.payee_rules = " ".join(str(form.get("payee_rules", "")).split())[:400]
@@ -876,6 +878,9 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
             raw = str(form.get(f"keypct_{p.id}", form.get(f"key_{p.id}", ""))).strip()
             if raw:
                 key[str(p.id)] = parse_float(raw)
+        elif a.key_type == "area":  # Fläche kommt aus der Partei; hier nur: nimmt teil
+            if form.get(f"keyarea_{p.id}"):
+                key[str(p.id)] = 1
         else:
             raw = normalize_spec(str(form.get(f"keyent_{p.id}", form.get(f"key_{p.id}", ""))))
             if raw:

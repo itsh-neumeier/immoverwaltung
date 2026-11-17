@@ -4,12 +4,13 @@
 <a class="btn" href="/admin/parties/0">+ Partei anlegen</a>
 <div class="card scroll" style="margin-top:12px">
 <table>
-<tr><th>Wohneinheit</th>{% if buildings|length > 1 %}<th>Gebäude</th>{% endif %}<th>WE-ID</th><th>Versand</th><th>Shelly-Zähler</th><th>Rolle</th><th>Status</th></tr>
+<tr><th>Wohneinheit</th>{% if buildings|length > 1 %}<th>Gebäude</th>{% endif %}<th>WE-ID</th><th class="r">Wohnfläche</th><th>Versand</th><th>Shelly-Zähler</th><th>Rolle</th><th>Status</th></tr>
 {% for p in parties %}
 <tr>
   <td><a href="/admin/parties/{{ p.id }}">{{ p.name }}</a>{% if p.unit %}<br><span class="muted">{{ p.unit }}</span>{% endif %}</td>
   {% if buildings|length > 1 %}<td>{{ buildings[p.building_id].label if p.building_id in buildings else '–' }}</td>{% endif %}
   <td>{{ p.unit_id or '' }}</td>
+  <td class="r">{{ (p.area|num(2) ~ ' m²') if p.area else '–' }}</td>
   <td>{% set ch = p.channel or 'email' %}{% if ch in ('email', 'both') %}✉️ {{ p.email or '–' }}{% endif %}{% if ch == 'both' %}<br>{% endif %}{% if ch in ('whatsapp', 'both') %}💬 {{ p.phone or '–' }}{% endif %}</td>
   <td>{% for m in p.meters %}<code>{{ m }}</code><br>{% endfor %}</td>
   <td>{% if p.is_owner %}<span class="badge">Eigentümer – Restverbrauch</span>{% endif %}</td>

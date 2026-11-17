@@ -6,9 +6,15 @@
     <div><label>Bezeichnung</label><input type="text" name="name" value="{{ c.name }}" required placeholder="IPTV-Bereitstellung"></div>
     <div><label>Betrag je Abrechnung (€, intern – ohne MwSt.)</label><input type="text" name="amount_gross" value="{{ c.amount_gross|num(2) }}"></div>
   </div>
-  <label>Verteilen auf (keine Auswahl = alle Parteien, jeweils gleichmäßig)</label>
+  <label>Aufteilung</label>
+  <select name="split">
+    <option value="equal" {% if c.split != 'area' %}selected{% endif %}>gleichmäßig auf die Parteien</option>
+    <option value="area" {% if c.split == 'area' %}selected{% endif %}>nach Wohnfläche (m²)</option>
+  </select>
+  <p class="muted" style="margin-top:4px">Nach Wohnfläche: Anteil = m² der Partei / m² aller beteiligten Parteien (Fläche bei der Partei hinterlegen).</p>
+  <label>Verteilen auf (keine Auswahl = alle Parteien)</label>
   {% for p in parties %}
-  <div class="check"><input type="checkbox" name="party_ids" value="{{ p.id }}" id="p{{ p.id }}" {% if p.id in (c.party_ids or [])|map('int')|list %}checked{% endif %}><label for="p{{ p.id }}" style="margin:0">{{ p.name }}</label></div>
+  <div class="check"><input type="checkbox" name="party_ids" value="{{ p.id }}" id="p{{ p.id }}" {% if p.id in (c.party_ids or [])|map('int')|list %}checked{% endif %}><label for="p{{ p.id }}" style="margin:0">{{ p.name }}{% if p.area %} <span class="muted">({{ p.area|num(2) }} m²)</span>{% endif %}</label></div>
   {% endfor %}
   <div class="check"><input type="checkbox" name="reserve" id="rs" {% if c.reserve %}checked{% endif %}><label for="rs" style="margin:0">Rücklage bilden – wird zeitversetzt bezahlt (z. B. Wassergeld, IPTV, Kaminkehrer)</label></div>
   <label>Zweck im Verwendungszweck der Rücklage (optional)</label>

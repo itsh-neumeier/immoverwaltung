@@ -49,6 +49,17 @@ Restverbrauch (Gesamt − andere Parteien − Strom-Umlagen).
 | Trinkwasser | m³ des Wasserzählers (HA-Adapter) × (Wasser- + Abwasserpreis je m³ aus den Einstellungen), verteilt nach festen Prozenten |
 | Sonstige Umlagen | fester Betrag; Verteilung auch nach Verbrauch je Partei (HA-Entität) oder gleichmäßig |
 
+
+### Umlage nach Wohnfläche (m²)
+
+Bei jeder Partei lässt sich die **Wohnfläche (m²)** hinterlegen. Es gibt zwei Wege, Kosten danach zu verteilen:
+- **Umlagen:** Verteilschlüssel „Nach Wohnfläche (m²)“. Per Haken wählst du die beteiligten Parteien; ohne Haken
+  sind alle Parteien mit Fläche beteiligt.
+- **Fixkosten:** Aufteilung „nach Wohnfläche (m²)“ statt gleichmäßig.
+
+Der Anteil ist m² der Partei geteilt durch die Summe der beteiligten Flächen. Die Beträge werden centgenau aufgeteilt;
+der Rundungsrest geht an die größten Anteile. Auf der Abrechnung steht z. B.
+„80,00 m² von 200,00 m² (40,0 %) von 49,33 €“.
 ## Installation (Docker)
 
 ```bash

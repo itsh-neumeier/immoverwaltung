@@ -6,6 +6,7 @@
     <div><label>Name / Wohneinheit</label><input type="text" name="name" value="{{ p.name }}" required placeholder="Familie Muster"></div>
     <div><label>Wohneinheiten-ID</label><input type="text" name="unit_id" value="{{ p.unit_id or '' }}" placeholder="WE-001"></div>
     <div><label>Lage (intern)</label><input type="text" name="unit" value="{{ p.unit or '' }}" placeholder="EG links"></div>
+    <div><label>Wohnfläche (m²)</label><input type="text" name="area" inputmode="decimal" value="{{ p.area|num(2) if p.area else '' }}" placeholder="z. B. 85,5"></div>
     <div><label>Sortierung</label><input type="number" name="sort" value="{{ p.sort or 0 }}"></div>
   </div>
   {% if buildings|length > 1 %}
