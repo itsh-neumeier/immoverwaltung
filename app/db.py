@@ -47,6 +47,7 @@ class Building(Base):
     sepa_format: Mapped[str] = mapped_column(String(20), default="pain.001.001.09")
     reserve_owner: Mapped[bool] = mapped_column(Boolean, default=True)  # Anteil des Eigentümers mit zurücklegen
     # monatlicher Sammelauftrag per E-Mail (XML im Anhang)
+    reserve_no_file: Mapped[bool] = mapped_column(Boolean, default=False)  # Rücklagenkonto: keine Datei-Übergabe (Sparkonto)
     sepa_mail: Mapped[bool] = mapped_column(Boolean, default=False)
     sepa_mail_to: Mapped[str] = mapped_column(String(300), default="")
     sepa_mail_day: Mapped[int] = mapped_column(Integer, default=25)  # am … des Vormonats
@@ -236,6 +237,9 @@ class SepaExport(Base):
     xml: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")
     status: Mapped[str] = mapped_column(String(10), default="open")  # open = erzeugt | done = Ausführung bestätigt
+    manual: Mapped[bool] = mapped_column(Boolean, default=False)  # statt Datei: eine Einzelüberweisung von Hand
+    manual_purpose: Mapped[str] = mapped_column(String(140), default="")  # Verwendungszweck mit Kennung
+    token: Mapped[str] = mapped_column(String(16), default="", index=True)  # zufällige Kennung, z. B. RG-K7QX9M2T
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     confirmed_by: Mapped[str] = mapped_column(String(100), default="")
 

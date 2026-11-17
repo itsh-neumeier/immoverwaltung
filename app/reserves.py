@@ -9,6 +9,7 @@ Girokonto aufs Rücklagenkonto übertragen; das Rücklagenbuch zeigt den Stand j
 from __future__ import annotations
 
 import re
+import secrets
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -340,7 +341,10 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
     free = round(bld.bank_reserve_balance - pots_total, 2) if bld.bank_reserve_balance is not None else None
     refunds = open_refunds(s, bld) if scope.is_super() else []
     cycle = cycle_status(s, bld)
-    return _page(request, "reserves.html", refunds=refunds, is_super=scope.is_super(), cycle=cycle, refunds_total=round(sum(r["amount"] for r in refunds
+    dl_export = s.get(SepaExport, dl) if dl else None
+    if dl_export is not None and dl_export.building_id != bld.id:
+        dl_export = None
+    return _page(request, "reserves.html", refunds=refunds, is_super=scope.is_super(), cycle=cycle, dl_export=dl_export, refunds_total=round(sum(r["amount"] for r in refunds
                  if not r["probable"]), 2), next_month=_add_months(date.today().replace(day=1), 1).strftime("%Y-%m"),
                  open_ids=open_ids, pick=PICK, surescore=SURE, detected=detect_standing_orders(s, bld),
                  plan_rows=plan_stats(s, bld, bal), pots_total=pots_total, free=free, lines=lines, cands=cands, sure=sure, missing=missing,
@@ -370,6 +374,7 @@ async def save_accounts(request: Request, s: Session = Depends(get_session)):
     start = str(form.get("reserve_start", "")).strip()
     bld.reserve_start = start if re.fullmatch(r"\d{4}-\d{2}", start) else ""
     bld.reserve_owner = bool(form.get("reserve_owner"))
+    bld.reserve_no_file = bool(form.get("reserve_no_file"))
     bld.sepa_mail = bool(form.get("sepa_mail"))
     bld.sepa_mail_to = ", ".join(a.strip() for a in re.split(r"[,;\s]+", str(form.get("sepa_mail_to", ""))) if "@" in a)[:300]
     day = str(form.get("sepa_mail_day", "25")).strip()
@@ -531,6 +536,12 @@ async def entry_add(request: Request, s: Session = Depends(get_session)):
             return _redirect(back, f"SEPA-Datei nicht erzeugt: {err}")
         ex = _store_export(s, request, bld, "out", xml, msg_id, exec_date, 1, amount)
         e.export_id = ex.id
+        if bld.reserve_no_file:
+            ex.manual, ex.token = True, new_token(s)
+            ex.manual_purpose = manual_purpose(ex, [(text, amount)])
+            s.commit()
+            return _redirect(f"{back}&dl={ex.id}", msg.replace("gebucht", "vorgemerkt") + " · Überweisungsvorlage "
+                             "aufs Hauptkonto oben – nach Ausführung bitte bestätigen.")
         s.commit()
         return _redirect(f"{back}&dl={ex.id}", msg.replace("gebucht", "vorgemerkt") + " · SEPA-Gutschrift aufs Hauptkonto "
                          "erzeugt – nach Ausführung bitte bestätigen.")
@@ -651,6 +662,31 @@ def _near(a: Optional[date], b: Optional[date], days: int = 7) -> bool:
     return a is not None and b is not None and abs((a - b).days) <= days
 
 
+def bld_cache(s: Session, line: BankLine) -> Building:
+    return s.get(Building, line.building_id)
+
+
+TOKEN_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # ohne leicht verwechselbare Zeichen (0/O, 1/I)
+
+
+def new_token(s: Session) -> str:
+    """Zufällige, eindeutige Kennung für eine Überweisung von Hand, z. B. RG-K7QX9M2T (32^8 Möglichkeiten)."""
+    while True:
+        token = "RG-" + "".join(secrets.choice(TOKEN_CHARS) for _ in range(8))
+        if not s.query(SepaExport.id).filter(SepaExport.token == token).first():
+            return token
+
+
+def manual_purpose(ex: SepaExport, items: list[tuple[str, float]]) -> str:
+    """Verwendungszweck der Überweisung von Hand (statt Datei); die Kennung steht vorn, damit sie nie abgeschnitten
+    wird – der Kontoabgleich verknüpft nur bei genau dieser Kennung automatisch."""
+    if len(items) == 1:
+        text, _ = items[0]
+        return sepa.clean(f"{ex.token} {text}", 140, umlauts=False)
+    return sepa.clean(f"{ex.token} GUTSCHRIFT RUECKLAGE SAMMEL {len(items)} POSTEN {ex.exec_date:%d.%m.%Y} "
+                      f"{_de(ex.total)} EUR", 140, umlauts=False)
+
+
 def candidates(s: Session, line: BankLine, limit: int = 60) -> list[dict]:
     """Vorschläge, beste zuerst: Überweisung aus einer App-Datei (Referenz/Zweck), Gegenbuchung auf dem anderen
     Konto, ganze SEPA-Datei (Sammelbuchung) oder Rücklagen-Topf (Stichworte, z. B. Dauerauftrag).
@@ -690,11 +726,21 @@ def candidates(s: Session, line: BankLine, limit: int = 60) -> list[dict]:
     for ex in s.query(SepaExport).filter(SepaExport.building_id == line.building_id,
                                          SepaExport.kind == kind).order_by(SepaExport.id.desc()).limit(50):
         es = [e for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id) if getattr(e, fld) is None]
-        if len(es) < 2 or abs(sum(abs(e.amount) for e in es) - amount) > 0.005:
+        manual = ex.manual or (kind == "out" and bld_cache(s, line).reserve_no_file)
+        if not es or (len(es) < 2 and not manual) or abs(sum(abs(e.amount) for e in es) - amount) > 0.005:
             continue
-        score = 100 if line.pmtinf and line.pmtinf.startswith(ex.msg_id) else 60
+        squashed = _squash(line.purpose)
+        if ex.token and ex.token.replace("-", "") in squashed:
+            score = 100  # Überweisung von Hand mit genau dieser Kennung
+        elif line.pmtinf and line.pmtinf.startswith(ex.msg_id):
+            score = 100
+        elif manual and "GUTSCHRIFTRUECKLAGE" in squashed:
+            score = 80  # passt nur über Betrag/Text – nicht automatisch verknüpfen
+        else:
+            score = 60
+        what = f"Überweisung von Hand ({ex.token})" if ex.token else f"SEPA-Datei {ex.filename}"
         out.append({"value": f"x:{ex.id}", "score": score, "amount": round(sum(abs(e.amount) for e in es), 2),
-                    "date": ex.exec_date, "text": f"SEPA-Datei {ex.filename} ({len(es)} Überweisungen, Sammelbuchung)"})
+                    "date": ex.exec_date, "text": f"{what} ({len(es)} Posten)"})
     # Rücklagen-Topf nach Stichworten (nur Umsätze mit Bezug zum Rücklagenkonto)
     bld = s.get(Building, line.building_id)
     if line.account == "reserve" or sepa.normalize_iban(line.iban) == sepa.normalize_iban(bld.reserve_iban if bld else ""):
@@ -1156,6 +1202,13 @@ async def refunds_export(request: Request, s: Session = Depends(get_session)):
                            amount=-r["amount"], kind="out", export_id=ex.id, note=r["purpose"], e2e=f"RG{r['txn'].id}",
                            fin_txn_id=r["txn"].id))
         s.get(FinTxn, r["txn"].id).reserve_done = "erstattet"
+    if bld.reserve_no_file:  # Sparkonto ohne Datei-Übergabe → eine Überweisung von Hand
+        ex.manual, ex.token = True, new_token(s)
+        ex.manual_purpose = manual_purpose(ex, [(r["purpose"], r["amount"]) for r in rows])
+        s.commit()
+        return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
+                         f"Gutschrift vorbereitet: {len(rows)} Posten, {_de(ex.total)} € – bitte als eine Überweisung "
+                         "vom Rücklagenkonto aufs Hauptkonto ausführen (Vorlage oben).")
     s.commit()
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
                      f"Sammelauftrag Gutschriften erzeugt: {len(rows)} Überweisung(en), {_de(ex.total)} € – im "
@@ -1304,7 +1357,8 @@ def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: 
     if refunds:
         paragraphs.append(f"Außerdem sind {len(refunds)} Gutschrift(en) über {_de(sum(r['amount'] for r in refunds))} € "
                           "aus der Rücklage aufs Hauptkonto offen – unter „Rücklagen → Offene Gutschriften“ prüfen und "
-                          "den Sammelauftrag Gutschriften erzeugen.")
+                          + ("die Überweisungsvorlage erzeugen (eine Überweisung vom Rücklagenkonto)."
+                             if bld.reserve_no_file else "den Sammelauftrag Gutschriften erzeugen."))
     html = mailer.render_html(title=f"Sammelauftrag Rücklagen {target:%m/%Y}", preheader=f"{_de(ex.total)} € am "
                               f"{ex.exec_date:%d.%m.%Y}", facts=facts, paragraphs=["Hallo,"] + paragraphs,
                               closing="Viele Grüße\nImmoVerwaltung",
@@ -1407,7 +1461,8 @@ def cycle_status(s: Session, bld: Building, today: Optional[date] = None) -> dic
                       + (f" (bisher bis {bld.bank_reserve_date:%d.%m.%Y})" if bld.bank_reserve_date else "")))
     if refunds:
         steps.append(("Gutschriften fürs Hauptkonto", "todo",
-                      f"{len(refunds)} offen · {_de(sum(r['amount'] for r in refunds))} € – Sammelauftrag Gutschriften erzeugen"))
+                      f"{len(refunds)} offen · {_de(sum(r['amount'] for r in refunds))} € – "
+                      + ("Überweisung vorbereiten" if bld.reserve_no_file else "Sammelauftrag Gutschriften erzeugen")))
     else:
         steps.append(("Gutschriften fürs Hauptkonto", "done", "nichts offen"))
     now = next((i for i, st in enumerate(steps) if st[1] != "done"), None)
@@ -1419,3 +1474,18 @@ def cycle_status(s: Session, bld: Building, today: Optional[date] = None) -> dic
     else:
         phase = "Alles erledigt"
     return {"month": month, "steps": steps, "phase": phase, "done": now is None}
+
+
+@router.post("/admin/reserves/export/{eid}/manual")
+def export_to_manual(eid: int, s: Session = Depends(get_session)):
+    """Gutschrift-Datei, die sich nicht hochladen lässt (Sparkonto), in eine Überweisung von Hand umwandeln."""
+    ex = _export(s, eid)
+    back = f"/admin/reserves?building={ex.building_id}"
+    if ex.status == "done" or ex.kind != "out":
+        return _redirect(back, "Nur noch nicht ausgeführte Gutschriften lassen sich umwandeln.")
+    if not ex.manual:
+        es = s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id).all()
+        ex.manual, ex.token = True, new_token(s)
+        ex.manual_purpose = manual_purpose(ex, [(e.note, -e.amount) for e in es])
+        s.commit()
+    return _redirect(f"{back}&dl={ex.id}", f"Überweisungsvorlage mit Kennung {ex.token} – bitte so ausführen.")

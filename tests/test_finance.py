@@ -271,3 +271,48 @@ def test_monthly_collective_order_mail(monkeypatch):
         # Dezember: Zuführungen sind vorgemerkt, nicht mehr offen
         with SessionLocal() as s:
             assert not reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))
+
+
+def test_manual_transfer_with_token_for_savings_account():
+    import re as _re
+
+    from app import reserves
+    from app.db import BankLine, ReservePlan, SepaExport
+
+    main = [tx("2026-11-16", -147.99, "MARKT HIRSCHAID", "GRUNDSTEUER FINANZADRESSE 19379 - 1"),
+            tx("2026-11-17", -36.00, "PayPal", "Cookidoo Vorwerk")]
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.code = b.id, "GID-01"
+            s.add(ReservePlan(building_id=bid, name="Immobilie · Grundsteuer", label="GRUNDSTEUER", annual_amount=600,
+                              start="2026-01", funding="sepa", category="immobilie", active=True,
+                              payee_rules="MARKT HIRSCHAID & zweck:GRUNDSTEUER"))
+            s.add(ReservePlan(building_id=bid, name="Abo · Cookidoo", label="COOKIDOO", annual_amount=36, start="2026-01",
+                              funding="sepa", category="privat", active=True, payee_rules="zweck:COOKIDOO"))
+            s.commit()
+        c.post("/admin/reserves/accounts", data={"building": bid, "account_name": "Timo Muster", "account_iban": GIRO,
+                                                 "reserve_name": "Timo Muster", "reserve_iban": RESERVE,
+                                                 "sepa_format": "pain.001.001.09", "reserve_no_file": "1"})
+        c.post("/admin/finanzen/import", files={"file": ("h.xml", camt(GIRO, main, None, ("2026-11-17", 100.0)), "application/xml")})
+        with SessionLocal() as s:
+            bills = [str(r["txn"].id) for r in reserves.open_refunds(s, s.get(Building, bid))]
+        r = c.post("/admin/reserves/refunds/export", data={"building": bid, "bills": bills})
+        assert "als eine Überweisung" in r.text and "Überweisung vorbereitet" in r.text
+        with SessionLocal() as s:
+            ex = s.query(SepaExport).one()
+            assert ex.manual and _re.fullmatch(r"RG-[A-HJ-NP-Z2-9]{8}", ex.token)
+            assert ex.manual_purpose.startswith(ex.token + " GUTSCHRIFT RUECKLAGE SAMMEL 2 POSTEN") and "183,99 EUR" in ex.manual_purpose
+            token, purpose = ex.token, ex.manual_purpose
+        assert token in r.text and "183,99" in r.text
+        # Kontoauszug: gleicher Betrag ohne Kennung (Köder) + die echte Überweisung mit Kennung
+        res = [{"amount": -183.99, "purpose": "GUTSCHRIFT RUECKLAGE IRGENDWAS", "date": "2026-11-18", "other": GIRO},
+               {"amount": -183.99, "purpose": purpose, "date": "2026-11-19", "other": GIRO}]
+        c.post("/admin/reserves/bank/import", data={"building": bid},
+               files={"file": ("r.xml", camt(RESERVE, res), "application/xml")})
+        c.post("/admin/reserves/bank/confirm-sure", data={"building": bid})
+        with SessionLocal() as s:
+            assert s.query(SepaExport).one().status == "done"
+            linked = {l.purpose[:20] for l in s.query(BankLine) if l.entry_ids}
+            assert linked == {purpose[:20]}  # nur die Überweisung mit Kennung, der Köder bleibt offen

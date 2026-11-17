@@ -13,7 +13,33 @@ als <b>SEPA-Datei</b> zum Hochladen im Online-Banking („Datei-Übergabe“).</
   </select></form>
 {% endif %}
 
-{% if dl %}
+{% if dl_export and dl_export.manual %}
+<div class="card transfer-card" style="border:2px solid #16a34a">
+  <b>💶 Überweisung vorbereitet – bitte im Online-Banking des Rücklagenkontos ausführen</b>
+  <p class="muted">Das Rücklagenkonto erlaubt keine Datei-Übergabe. Diese eine Überweisung ersetzt die {{ dl_export.count }} Einzelposten;
+  der Kontoabgleich erkennt sie an der Kennung <b>{{ dl_export.token }}</b> (bitte nicht verändern) und hakt alles automatisch ab.</p>
+  <div class="transfer-grid">
+    <span class="muted">Von</span><span>Rücklagenkonto {{ fmt_iban(bld.reserve_iban) }}</span><span></span>
+    <span class="muted">An</span><span>{{ bld.account_name }} · <code id="tf-iban">{{ fmt_iban(bld.account_iban) }}</code></span>
+      <button type="button" class="sec" data-copy="tf-iban">📋</button>
+    <span class="muted">Betrag</span><span><b id="tf-amount">{{ '%.2f'|format(dl_export.total)|replace('.', ',') }}</b> €</span>
+      <button type="button" class="sec" data-copy="tf-amount">📋</button>
+    <span class="muted">Verwendungszweck</span><code id="tf-purpose">{{ dl_export.manual_purpose }}</code>
+      <button type="button" class="sec" data-copy="tf-purpose">📋</button>
+    <span class="muted">Ausführung</span><span>{{ dl_export.exec_date.strftime('%d.%m.%Y') if dl_export.exec_date }}</span><span></span>
+  </div>
+</div>
+<script>
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-copy]'); if (!b) return;
+  const text = document.getElementById(b.dataset.copy).textContent.trim();
+  const done = () => { const o = b.textContent; b.textContent = '✔'; setTimeout(() => b.textContent = o, 1500); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done);
+  else { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+         document.execCommand('copy'); ta.remove(); done(); }
+});
+</script>
+{% elif dl %}
 <div class="card" style="border:2px solid #16a34a">
   <b>📄 SEPA-Datei bereit.</b> Der Download startet automatisch –
   sonst <a href="/admin/reserves/export/{{ dl }}.xml" id="dl-link">hier herunterladen</a>. Im Online-Banking:
@@ -54,6 +80,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <div class="check"><input type="checkbox" name="reserve_no_file" id="rl-nofile" {% if bld.reserve_no_file %}checked{% endif %}><label for="rl-nofile" style="margin:0">Rücklagenkonto ohne Datei-Übergabe (Sparkonto): Gutschriften als <b>eine Überweisung von Hand</b> statt XML-Datei</label></div>
     <h3>Monatlicher Sammelauftrag per E-Mail</h3>
     <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
     <div class="grid">
@@ -234,7 +261,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <div><label>Ausführungsdatum</label><input type="date" name="exec_date" value="{{ exec_date.isoformat() }}" min="{{ today.isoformat() }}"></div>
     <div><label>offen (ohne „vermutlich erstattet“)</label><div style="font-size:1.4rem;font-weight:700">{{ refunds_total|eur }}</div></div>
   </div>
-  <button {% if problems %}disabled{% endif %}>📄 Sammelauftrag Gutschriften erzeugen</button>
+  <button {% if problems %}disabled{% endif %}>{{ '💶 Gutschrift als eine Überweisung vorbereiten' if bld.reserve_no_file else '📄 Sammelauftrag Gutschriften erzeugen' }}</button>
   {% else %}<p class="muted">Keine offenen Rechnungen. Beim Topf „Rechnung kommt von“ eintragen (z. B. <code>MARKT HIRSCHAID &amp; zweck:GRUNDSTEUER</code>)
   und den Kontoauszug des Hauptkontos unter <a href="/admin/finanzen">Finanzen</a> einlesen.</p>{% endif %}
 </form>
@@ -279,7 +306,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <td>{{ 'Zuführung' if ex.kind == 'in' else 'Auszahlung' }}</td>
     <td>{{ ex.exec_date.strftime('%d.%m.%Y') if ex.exec_date else '' }}</td>
     <td class="r">{{ ex.count }}</td><td class="r">{{ ex.total|eur }}</td>
-    <td><a href="/admin/reserves/export/{{ ex.id }}.xml">⬇ {{ ex.filename }}</a></td>
+    <td>{% if ex.manual %}<a href="?building={{ bld.id }}&dl={{ ex.id }}">💶 Überweisung von Hand · {{ ex.token }}</a><br><span class="muted" style="font-size:12px">{{ ex.manual_purpose }}</span>
+      {% else %}<a href="/admin/reserves/export/{{ ex.id }}.xml">⬇ {{ ex.filename }}</a>{% endif %}</td>
     <td style="min-width:220px">
     {% if ex.status == 'done' %}
       <span class="badge" style="background:#dcfce7;color:#166534">✓ ausgeführt</span>
@@ -291,6 +319,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
         <input type="date" name="executed_on" value="{{ (ex.exec_date or today).isoformat() }}" style="width:auto" aria-label="ausgeführt am">
         <button>✓ Ausgeführt</button></form>
       <form method="post" action="/admin/reserves/export/{{ ex.id }}/delete" style="display:inline" onsubmit="return confirm('Datei verwerfen? Nur wenn sie NICHT ausgeführt wurde – die Posten sind danach wieder offen.')"><button class="sec">Verwerfen</button></form>
+      {% if ex.kind == 'out' and not ex.manual %}<form method="post" action="/admin/reserves/export/{{ ex.id }}/manual" style="display:inline"><button class="sec" title="Rücklagenkonto ohne Datei-Übergabe: als eine Überweisung mit Kennung ausführen">💶 als Überweisung von Hand</button></form>{% endif %}
     {% endif %}</td></tr>
   {% else %}<tr><td colspan="7" class="muted">Noch keine Dateien erzeugt.</td></tr>{% endfor %}
 </table></div>
@@ -417,6 +446,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <div class="check"><input type="checkbox" name="reserve_no_file" id="rl-nofile" {% if bld.reserve_no_file %}checked{% endif %}><label for="rl-nofile" style="margin:0">Rücklagenkonto ohne Datei-Übergabe (Sparkonto): Gutschriften als <b>eine Überweisung von Hand</b> statt XML-Datei</label></div>
     <h3>Monatlicher Sammelauftrag per E-Mail</h3>
     <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
     <div class="grid">

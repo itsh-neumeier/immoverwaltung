@@ -227,3 +227,6 @@ header.area-home{border-top:3px solid #16a34a}
 .cycle-icon{font-weight:700;width:1.2em;text-align:center}
 .cycle-steps li.done .cycle-icon{color:var(--ok)}
 .cycle-steps li.now .cycle-icon{color:var(--accent)}
+.transfer-grid{display:grid;grid-template-columns:auto 1fr auto;gap:8px 12px;align-items:center;margin-top:8px}
+.transfer-grid code{word-break:break-word}
+.transfer-grid button{margin:0;padding:4px 8px}
