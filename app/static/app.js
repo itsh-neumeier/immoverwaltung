@@ -37,6 +37,11 @@
       else document.documentElement.setAttribute("data-theme", next);
       document.cookie = "nk_theme=" + next + ";path=/;max-age=" + 400 * 86400 + ";samesite=lax";
     }
+    // Navigationsgruppen: am Desktop nur eine offen, Klick daneben schließt
+    const group = e.target.closest(".nav-group");
+    if (!window.matchMedia("(max-width: 860px)").matches) {
+      document.querySelectorAll(".nav-group[open]").forEach((g) => { if (g !== group) g.removeAttribute("open"); });
+    }
     const toggle = e.target.closest(".menu-toggle");
     if (toggle) {
       const nav = toggle.closest("nav");
@@ -47,6 +52,10 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     if (standalone) document.documentElement.classList.add("standalone");
+    // Handy: Gruppe der aktuellen Seite im Menü aufgeklappt
+    if (window.matchMedia("(max-width: 860px)").matches) {
+      document.querySelectorAll(".nav-group.active").forEach((g) => g.setAttribute("open", ""));
+    }
     const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
     set("st-standalone", standalone ? "✔ Läuft als installierte App" : "ℹ Läuft im Browser");
     set("st-sw", "serviceWorker" in navigator

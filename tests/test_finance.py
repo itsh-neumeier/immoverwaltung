@@ -82,11 +82,14 @@ def test_finance_only_for_super_admin():
     with TestClient(app) as c:
         c.post("/setup", data={"username": "admin", "password": "admin-pass-1", "password2": "admin-pass-1"})
         c.post("/admin/users/0", data={"username": "verw", "role": "admin", "password": "verwalter-1", "active": "1"})
-        assert "Finanzen" in c.get("/admin").text
+        page = c.get("/admin").text
+        assert "🏠 Immobilie" in page and 'href="/admin/finanzen"' in page and "⚙️ System" in page
         c.get("/logout")
         c.post("/login", data={"username": "verw", "password": "verwalter-1"})
         assert c.get("/admin/finanzen", follow_redirects=False).status_code == 303
-        assert ">Finanzen<" not in c.get("/admin").text
+        page = c.get("/admin").text
+        assert 'href="/admin/finanzen"' not in page and 'href="/admin/reserves"' in page  # Rücklagen ja, Budget nein
+        assert "⚙️ System" not in page
 
 
 def test_refunds_cut_and_monthly_collective_orders():

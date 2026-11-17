@@ -196,3 +196,23 @@ header.area-home{border-top:3px solid #16a34a}
 .bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:6px 0 4px}
 .bar span{display:block;height:100%;border-radius:4px}
 .cut-box{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;padding:10px;border:1px dashed var(--line);border-radius:8px}
+/* ---- Navigation in Gruppen (Immobilie / Finanzen / System) ---- */
+.nav-group{position:relative}
+.nav-group>summary{list-style:none;cursor:pointer;color:var(--fg);padding:2px 0;border-bottom:2px solid transparent;white-space:nowrap}
+.nav-group>summary::-webkit-details-marker{display:none}
+.nav-group>summary::after{content:" ▾";font-size:.75em;color:var(--muted)}
+.nav-group[open]>summary::after{content:" ▴"}
+.nav-group.active>summary{font-weight:600;border-bottom-color:var(--accent)}
+.nav-menu{position:absolute;top:calc(100% + 10px);left:-12px;z-index:40;display:flex;flex-direction:column;min-width:240px;
+  padding:6px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.14)}
+.nav-menu a{padding:9px 12px;border-radius:8px;white-space:nowrap}
+.nav-menu a:hover{background:var(--bg)}
+.nav-menu a.active{font-weight:600;color:var(--accent)}
+.nav-sep{flex:1}
+@media (max-width:860px){
+  .nav-group>summary{padding:11px 4px;border-top:1px solid var(--line);border-bottom:0}
+  .nav-group.active>summary{color:var(--accent)}
+  .nav-menu{position:static;min-width:0;padding:0 0 6px 14px;border:0;box-shadow:none;background:transparent}
+  .nav-links .nav-menu a{border-top:0;padding:9px 4px}
+  .nav-sep{display:none}
+}
