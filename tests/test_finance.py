@@ -153,3 +153,30 @@ def test_refunds_cut_and_monthly_collective_orders():
             assert (p.funding, p.start, p.standing_order, p.rate) == ("sepa", "2026-12", 0.0, 49.33)
             items = reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))
             assert [i.purpose for i in items] == ["RUECKLAGE GRUNDSTEUER 12/2026 GID: 134 49,33 EUR"]
+
+
+def test_protected_manual_pot_is_never_touched():
+    from app import reserves
+    from app.db import ReservePlan
+
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.account_name, b.reserve_name = b.id, "Timo Muster", "Timo Muster"
+            b.account_iban, b.reserve_iban = GIRO, RESERVE
+            s.commit()
+        c.post("/admin/reserves/plan", data={"building": bid, "name": "Urlaub", "label": "URLAUB", "annual_amount": "2400",
+                                             "interval": "1", "start": "2026-01", "category": "privat", "funding": "manuell",
+                                             "payee_rules": "zweck:URLAUB"})
+        c.post("/admin/finanzen/import", files={"file": ("h.xml", camt(GIRO, [tx("2026-11-05", -900.0, "Reisebuero",
+                                                                                      "URLAUB TUERKEI")], None,
+                                                                            ("2026-11-10", 100.0)), "application/xml")})
+        assert "0 Töpfe" in c.post("/admin/reserves/plans/cut", data={"building": bid, "month": "2026-12"}).text
+        with SessionLocal() as s:
+            bld = s.get(Building, bid)
+            p = s.query(ReservePlan).one()
+            assert p.funding == "manuell" and p.start == "2026-01"
+            assert not reserves.plan_pending(s, bld, today=date(2026, 12, 3))  # keine Zuführung
+            assert not reserves.open_refunds(s, bld)  # keine Gutschrift
+        assert "🔒 Manuell" in c.get("/admin/reserves").text

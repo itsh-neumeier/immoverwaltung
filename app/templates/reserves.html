@@ -131,7 +131,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <td><b>{{ p.name }}</b> <span class="badge">{{ 'Privat' if p.category == 'privat' else 'Immobilie' }}</span>{% if not p.active %} <span class="badge">inaktiv</span>{% endif %}
         {% if p.due_note %}<br><span class="muted" style="font-size:12px">fällig: {{ p.due_note }}</span>{% endif %}
         {% if r.hint %}<br><span style="font-size:12px;color:var(--warn)">⚠ {{ r.hint }}</span>{% endif %}</td>
-      <td>{{ 'Dauerauftrag' if p.funding == 'dauerauftrag' else 'SEPA-Datei' }}{% if p.funding != 'dauerauftrag' %}<br><span class="muted" style="font-size:12px">{{ p.rate|eur }} {{ intervals.get(p.interval, '') }}</span>{% endif %}</td>
+      <td>{{ {'dauerauftrag': 'Dauerauftrag', 'manuell': '🔒 Manuell'}.get(p.funding, 'SEPA-Datei') }}{% if p.funding == 'sepa' %}<br><span class="muted" style="font-size:12px">{{ p.rate|eur }} {{ intervals.get(p.interval, '') }}</span>{% endif %}</td>
       <td class="r">{{ p.annual_amount|eur }}</td><td class="r">{{ r.soll|eur }}</td>
       <td class="r">{{ p.standing_order|eur if p.funding == 'dauerauftrag' else '–' }}</td>
       <td class="r">{{ r.ist|eur }}</td><td class="r">{{ r.out12|eur }}</td>
@@ -165,7 +165,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>ab Monat</label><input type="month" name="start" value="{{ ep.start if ep else today.strftime('%Y-%m') }}"></div>
       <div><label>Fälligkeit (Info)</label><input type="text" name="due_note" maxlength="120" value="{{ ep.due_note if ep else '' }}" placeholder="15.02./15.05./15.08./15.11."></div>
       <div><label>Bereich</label><select name="category"><option value="immobilie">Immobilie (mit GID im Zweck)</option><option value="privat" {% if ep and ep.category == 'privat' %}selected{% endif %}>Privat / Sonstiges</option></select></div>
-      <div><label>Weg</label><select name="funding"><option value="sepa">SEPA-Datei aus der App</option><option value="dauerauftrag" {% if ep and ep.funding == 'dauerauftrag' %}selected{% endif %}>Dauerauftrag der Bank</option></select></div>
+      <div><label>Weg</label><select name="funding"><option value="sepa">SEPA-Datei aus der App</option><option value="dauerauftrag" {% if ep and ep.funding == 'dauerauftrag' %}selected{% endif %}>Dauerauftrag der Bank</option>
+        <option value="manuell" {% if ep and ep.funding == 'manuell' %}selected{% endif %}>Manuell (geschützt – z. B. Urlaub)</option></select></div>
       <div><label>Dauerauftrag aktuell (€/Monat)</label><input type="text" name="standing_order" inputmode="decimal" value="{{ ep.standing_order|num(2) if ep and ep.standing_order else '' }}" placeholder="50,00"></div>
       <div><label>Rechnung kommt von (Hauptkonto)</label><input type="text" name="payee_rules" maxlength="400" value="{{ ep.payee_rules if ep else '' }}" placeholder="z. B. MARKT HIRSCHAID &amp; zweck:GRUNDSTEUER  (Komma = oder, &amp; = und)"></div>
       <div><label>Stichworte im Kontoauszug</label><input type="text" name="keywords" maxlength="200" value="{{ ep.keywords if ep else '' }}" placeholder="leer = aus Name/Zweck; Varianten mit Komma: KFZ STEUER OPEL, INSIGNIA STEUER"></div>

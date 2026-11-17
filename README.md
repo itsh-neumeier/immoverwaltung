@@ -250,6 +250,9 @@ auf SEPA-Dateien um. Danach entstehen jeden Monat zwei Sammelaufträge:
      „vermutlich erstattet“ bzw. „teilweise erstattet“.
    - Einzelne Rechnungen lassen sich als „erstattet“ oder „nicht erstatten“ markieren.
 
+Töpfe mit dem Weg **„Manuell (geschützt)“** (z. B. Urlaub) bekommen keine Sammelaufträge, keine Gutschriften und werden
+beim Umstellen nicht verändert; dort zählen nur Buchungen, die man selbst zuordnet.
+
 Jeder Verwendungszweck enthält den Zweck des Topfs (z. B. `GRUNDSTEUER`). So ordnet der Kontoabgleich
 die Umsätze wieder dem richtigen Topf zu. Alte Schreibweisen trägt man unter „Stichworte“ ein.
 

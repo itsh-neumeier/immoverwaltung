@@ -140,7 +140,7 @@ class ReservePlan(Base):
     start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM erste Zuführung
     due_note: Mapped[str] = mapped_column(String(120), default="")  # z. B. „15.02./15.05./15.08./15.11.“
     category: Mapped[str] = mapped_column(String(20), default="immobilie")  # immobilie | privat
-    funding: Mapped[str] = mapped_column(String(20), default="sepa")  # sepa (Datei aus der App) | dauerauftrag (Bank)
+    funding: Mapped[str] = mapped_column(String(20), default="sepa")  # sepa | dauerauftrag | manuell (geschützt)
     keywords: Mapped[str] = mapped_column(String(200), default="")  # Stichworte zum Erkennen im Kontoauszug
     standing_order: Mapped[float] = mapped_column(Float, default=0.0)  # aktueller Dauerauftrag €/Monat (Ist)
     payee_rules: Mapped[str] = mapped_column(String(400), default="")  # Rechnung kommt von … (Hauptkonto, für Gutschriften)

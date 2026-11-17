@@ -178,7 +178,7 @@ def plan_pending(s: Session, building: Building, today: Optional[date] = None) -
     items = []
     for p in plans(s, building, active_only=True):
         start = _month(p.start) or p.created_at.date().replace(day=1)
-        if p.rate < 0.01 or p.funding == "dauerauftrag":  # Dauerauftrag führt die Bank aus → nur Abgleich
+        if p.rate < 0.01 or p.funding in ("dauerauftrag", "manuell"):  # Bank bzw. nur von Hand → keine SEPA-Zuführung
             continue
         ref = f"rp:{p.id}"
         done = {e.period for e in s.query(ReserveEntry).filter(ReserveEntry.ref == ref, ReserveEntry.kind == "in")}
@@ -564,7 +564,7 @@ async def plan_save(request: Request, s: Session = Depends(get_session)):
     p.start = start if _month(start) else f"{date.today():%Y-%m}"
     p.due_note = " ".join(str(form.get("due_note", "")).split())[:120]
     p.category = "privat" if form.get("category") == "privat" else "immobilie"
-    p.funding = "dauerauftrag" if form.get("funding") == "dauerauftrag" else "sepa"
+    p.funding = form.get("funding") if form.get("funding") in ("dauerauftrag", "manuell") else "sepa"
     p.keywords = " ".join(str(form.get("keywords", "")).split())[:200]
     p.standing_order = round(rnd.parse_float(form.get("standing_order")) or 0.0, 2)
     p.payee_rules = " ".join(str(form.get("payee_rules", "")).split())[:400]
@@ -1004,7 +1004,7 @@ def _payee_sources(s: Session, bld: Building) -> list[tuple]:
     pos = positions(s, bld)
     out = []
     for p in plans(s, bld, active_only=True):
-        if p.payee_rules.strip() and f"rp:{p.id}" in pos:
+        if p.funding != "manuell" and p.payee_rules.strip() and f"rp:{p.id}" in pos:  # geschützte Töpfe nie erstatten
             out.append((f"rp:{p.id}", pos[f"rp:{p.id}"], parse_payee(p.payee_rules), _month(p.start)))
     for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)):
         if (f.payee_rules or "").strip():
