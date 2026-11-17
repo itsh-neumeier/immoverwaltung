@@ -1017,19 +1017,33 @@ def parse_payee(text: str) -> list[list]:
     return groups
 
 
+def _since(s: Session, bld: Building, ref: str, *dates) -> Optional[date]:
+    """Rechnungen zählen ab dem frühesten Zeitpunkt des Topfs: erste Buchung im Topf bzw. Start/„Rücklagen ab“
+    (der Start des Sammelauftrags nach einer Umstellung zählt nicht als Beginn des Topfs)."""
+    first = s.query(ReserveEntry.booking_date).filter(ReserveEntry.building_id == bld.id, ReserveEntry.ref == ref,
+                                                      ReserveEntry.booking_date.isnot(None)) \
+        .order_by(ReserveEntry.booking_date).first()
+    cands = [d for d in (*dates, first[0].replace(day=1) if first else None) if d]
+    return min(cands) if cands else None
+
+
 def _payee_sources(s: Session, bld: Building) -> list[tuple]:
-    """(ref, Position, Regel-Gruppen, ab Datum) für Töpfe/Positionen mit „Rechnung kommt von“."""
+    """(ref, Position, Regel-Gruppen, ab Datum, privat) für Töpfe/Positionen mit „Rechnung kommt von“."""
     pos = positions(s, bld)
     out = []
     for p in plans(s, bld, active_only=True):
-        if p.funding != "manuell" and p.payee_rules.strip() and f"rp:{p.id}" in pos:  # geschützte Töpfe nie erstatten
-            out.append((f"rp:{p.id}", pos[f"rp:{p.id}"], parse_payee(p.payee_rules), _month(p.start)))
+        ref = f"rp:{p.id}"
+        if p.funding != "manuell" and p.payee_rules.strip() and ref in pos:  # geschützte Töpfe nie erstatten
+            out.append((ref, pos[ref], parse_payee(p.payee_rules), _since(s, bld, ref, _month(p.start)),
+                        p.category == "privat"))
     for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)):
         if (f.payee_rules or "").strip():
-            out.append((f"fc:{f.id}", pos.get(f"fc:{f.id}"), parse_payee(f.payee_rules), _start(bld)))
+            out.append((f"fc:{f.id}", pos.get(f"fc:{f.id}"), parse_payee(f.payee_rules),
+                        _since(s, bld, f"fc:{f.id}", _start(bld)), False))
     for a in s.query(Allocation).filter(Allocation.reserve.is_(True)):
         if (a.payee_rules or "").strip():
-            out.append((f"al:{a.id}", pos.get(f"al:{a.id}"), parse_payee(a.payee_rules), _start(bld)))
+            out.append((f"al:{a.id}", pos.get(f"al:{a.id}"), parse_payee(a.payee_rules),
+                        _since(s, bld, f"al:{a.id}", _start(bld)), False))
     return [x for x in out if x[1] is not None and x[2]]
 
 
@@ -1056,9 +1070,9 @@ def _rule_hit(groups, t) -> int:
     return best
 
 
-def refund_purpose(label: str, t, amount: float, building: Optional[Building]) -> str:
+def refund_purpose(label: str, t, amount: float, building: Optional[Building], private: bool = False) -> str:
     """z. B. GUTSCHRIFT RUECKLAGE GRUNDSTEUER GID: 134 RECHNUNG MARKT HIRSCHAID 16.11.2026 147,99 EUR"""
-    code = f"GID: {gid(building.code)} " if building and building.code else ""
+    code = f"GID: {gid(building.code)} " if building and building.code and not private else ""
     payee = sepa.clean(t.name or t.purpose, 40, umlauts=False).upper()
     date_ = f"{t.booking_date:%d.%m.%Y} " if t.booking_date else ""
     return sepa.clean(f"GUTSCHRIFT RUECKLAGE {label} {code}RECHNUNG {payee} {date_}{_de(amount)} EUR", 140,
@@ -1086,15 +1100,15 @@ def open_refunds(s: Session, bld: Building) -> list[dict]:
         if sepa.normalize_iban(t.iban) in own:
             continue  # Umbuchung zwischen eigenen Konten ist keine Rechnung
         best = None
-        for ref, pos, rules, since in sources:
+        for ref, pos, rules, since, private in sources:
             if since and t.booking_date and t.booking_date < since:
                 continue
             score = _rule_hit(rules, t)
             if score and (best is None or score > best[0]):
-                best = (score, ref, pos)
+                best = (score, ref, pos, private)
         if best is None:
             continue
-        _, ref, pos = best
+        _, ref, pos, private = best
         amount = round(-t.amount, 2)
         covered, last = 0.0, None
         for item in pool.get(ref, []):  # Auszahlungen aus dem Topf ±21 Tage anrechnen
@@ -1112,7 +1126,7 @@ def open_refunds(s: Session, bld: Building) -> list[dict]:
         rows.append({"txn": t, "ref": ref, "pos": pos, "amount": amount if not covered else (0.0 if full else rest),
                      "bill": amount, "covered": round(covered, 2), "probable": last if full else None,
                      "partial": last if covered and not full else None,
-                     "purpose": refund_purpose(pos.label, t, rest if covered and not full else amount, bld)})
+                     "purpose": refund_purpose(pos.label, t, rest if covered and not full else amount, bld, private)})
     return rows
 
 

@@ -156,6 +156,10 @@ def test_refunds_cut_and_monthly_collective_orders():
             assert (p.funding, p.start, p.standing_order, p.rate) == ("sepa", "2026-12", 0.0, 49.33)
             items = reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))
             assert [i.purpose for i in items] == ["RUECKLAGE GRUNDSTEUER 12/2026 GID: 134 49,33 EUR"]
+            # nach der Umstellung bleiben ältere Rechnungen erstattbar (Beginn = erste Buchung im Topf)
+            assert [r["txn"].id for r in reserves.open_refunds(s, s.get(Building, bid))] == [open_bill]
+            bill = s.get(FinTxn, open_bill)
+            assert "GID" not in reserves.refund_purpose("ADAC", bill, 79.0, s.get(Building, bid), private=True)
 
 
 def test_protected_manual_pot_is_never_touched():
