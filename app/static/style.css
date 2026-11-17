@@ -216,3 +216,14 @@ header.area-home{border-top:3px solid #16a34a}
   .nav-links .nav-menu a{border-top:0;padding:9px 4px}
   .nav-sep{display:none}
 }
+/* ---- Monatsablauf ---- */
+.cycle-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.cycle-phase{background:#fef3c7;color:#92400e;border-color:#fcd34d}
+.cycle-phase.ok{background:#dcfce7;color:#166534;border-color:#86efac}
+.cycle-steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.cycle-steps li{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.cycle-steps li.now{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.cycle-steps li.done{opacity:.75}
+.cycle-icon{font-weight:700;width:1.2em;text-align:center}
+.cycle-steps li.done .cycle-icon{color:var(--ok)}
+.cycle-steps li.now .cycle-icon{color:var(--accent)}

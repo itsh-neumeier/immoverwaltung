@@ -234,6 +234,8 @@ def test_monthly_collective_order_mail(monkeypatch):
                                                  "sepa_format": "pain.001.001.09", "reserve_owner": "1", "sepa_mail": "1",
                                                  "sepa_mail_to": "timo@example.test", "sepa_mail_day": "25"})
         with SessionLocal() as s:
+            cyc = reserves.cycle_status(s, s.get(Building, bid), date(2026, 11, 20))
+            assert cyc["phase"] == "Warten auf Versand am 25.11." and cyc["month"] == date(2026, 12, 1)
             assert reserves.monthly_tick(s, date(2026, 11, 24)) == []  # vor dem 25.
             out = reserves.monthly_tick(s, date(2026, 11, 25))
             assert out and "Sammelauftrag 12/2026 (57,00 €, 2 Überweisungen)" in out[0]
@@ -251,6 +253,17 @@ def test_monthly_collective_order_mail(monkeypatch):
             assert "per E-Mail" in reserves.monthly_run(s, s.get(Building, bid), today=date(2026, 11, 26), force=True)
             assert s.query(SepaExport).count() == 1
         assert len(sent) == 2
+        # Phase nach dem Versand: hochladen; nach Bestätigung: Kontoabgleich
+        with SessionLocal() as s:
+            bld = s.get(Building, bid)
+            cyc = reserves.cycle_status(s, bld, date(2026, 11, 26))
+            assert cyc["month"] == date(2026, 12, 1) and cyc["phase"] == "Hochgeladen & ausgeführt"
+            assert cyc["steps"][0][1] == "done" and "per E-Mail versandt" in cyc["steps"][0][2]
+            ex_id = s.query(SepaExport).one().id
+        c.post(f"/admin/reserves/export/{ex_id}/confirm", data={"executed_on": "2026-12-01"})
+        with SessionLocal() as s:
+            assert reserves.cycle_status(s, s.get(Building, bid), date(2026, 12, 2))["phase"] == "Kontoabgleich"
+        assert "Monatsablauf" in c.get("/admin/reserves").text
         # Dezember: Zuführungen sind vorgemerkt, nicht mehr offen
         with SessionLocal() as s:
             assert not reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))

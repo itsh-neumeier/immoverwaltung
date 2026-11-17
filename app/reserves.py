@@ -339,7 +339,8 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
     pots_total = round(sum(r["total"] for r in bal), 2)
     free = round(bld.bank_reserve_balance - pots_total, 2) if bld.bank_reserve_balance is not None else None
     refunds = open_refunds(s, bld) if scope.is_super() else []
-    return _page(request, "reserves.html", refunds=refunds, is_super=scope.is_super(), refunds_total=round(sum(r["amount"] for r in refunds
+    cycle = cycle_status(s, bld)
+    return _page(request, "reserves.html", refunds=refunds, is_super=scope.is_super(), cycle=cycle, refunds_total=round(sum(r["amount"] for r in refunds
                  if not r["probable"]), 2), next_month=_add_months(date.today().replace(day=1), 1).strftime("%Y-%m"),
                  open_ids=open_ids, pick=PICK, surescore=SURE, detected=detect_standing_orders(s, bld),
                  plan_rows=plan_stats(s, bld, bal), pots_total=pots_total, free=free, lines=lines, cands=cands, sure=sure, missing=missing,
@@ -1347,3 +1348,60 @@ async def monthly_send(request: Request, s: Session = Depends(get_session)):
         from . import mailer
         return _redirect(back, f"Nicht gesendet: {mailer.explain(e) if not isinstance(e, sepa.SepaError) else e}")
     return _redirect(back, msg or "Nichts zu tun.")
+
+
+# --------------------------------------------------------------------------- Monatsablauf (Phase)
+def cycle_status(s: Session, bld: Building, today: Optional[date] = None) -> dict:
+    """Wo steht der Monatsablauf? Sammelauftrag → Ausführung → Kontoabgleich → Gutschriften.
+    Bis zum Versandtag zählt der laufende Monat, danach der Folgemonat."""
+    today = today or date.today()
+    day = bld.sepa_mail_day or 25
+    def export_for(m):
+        return s.query(SepaExport).filter(SepaExport.building_id == bld.id, SepaExport.kind == "in",
+                                          SepaExport.exec_date >= m, SepaExport.exec_date < _add_months(m, 1)) \
+            .order_by(SepaExport.id.desc()).first()
+
+    month = today.replace(day=1)
+    if today.day >= day or export_for(month) is None:  # laufender Monat ohne Sammelauftrag → Folgemonat
+        month = _add_months(month, 1)
+    ym = f"{month:%Y-%m}"
+    send_on = date(_add_months(month, -1).year, _add_months(month, -1).month, day)
+    ex = export_for(month)
+    lines_open = len(open_lines(s, bld))
+    refunds = [r for r in open_refunds(s, bld) if not r["probable"] and r["amount"] >= 0.01] if scope.is_super() else []
+    steps = []
+    if ex:
+        sent = " · per E-Mail versandt" if bld.sepa_mail_last == ym else ""
+        steps.append(("Sammelauftrag erzeugt", "done", f"{_de(ex.total)} € · {ex.count} Überweisungen{sent}"))
+    elif bld.sepa_mail:
+        steps.append(("Sammelauftrag erzeugt", "todo", f"wird am {send_on:%d.%m.%Y} automatisch per E-Mail versandt"))
+    else:
+        steps.append(("Sammelauftrag erzeugt", "todo", "unten erzeugen oder Versand per E-Mail einschalten"))
+    if ex and ex.status == "done":
+        steps.append(("Hochgeladen & ausgeführt", "done", f"bestätigt {ex.confirmed_at:%d.%m.%Y}" if ex.confirmed_at else "bestätigt"))
+    elif ex:
+        steps.append(("Hochgeladen & ausgeführt", "todo", f"im Online-Banking hochladen · Ausführung {ex.exec_date:%d.%m.%Y}"))
+    else:
+        steps.append(("Hochgeladen & ausgeführt", "todo", "nach dem Erzeugen"))
+    statement_ok = ex is not None and bld.bank_reserve_date is not None and bld.bank_reserve_date >= ex.exec_date
+    if statement_ok and not lines_open:
+        steps.append(("Kontoabgleich", "done", f"Kontoauszug bis {bld.bank_reserve_date:%d.%m.%Y} zugeordnet"))
+    elif statement_ok:
+        steps.append(("Kontoabgleich", "todo", f"{lines_open} Umsätze zuordnen"))
+    else:
+        steps.append(("Kontoabgleich", "todo", "Kontoauszug nach der Ausführung einlesen"
+                      + (f" (bisher bis {bld.bank_reserve_date:%d.%m.%Y})" if bld.bank_reserve_date else "")))
+    if refunds:
+        steps.append(("Gutschriften fürs Hauptkonto", "todo",
+                      f"{len(refunds)} offen · {_de(sum(r['amount'] for r in refunds))} € – Sammelauftrag Gutschriften erzeugen"))
+    else:
+        steps.append(("Gutschriften fürs Hauptkonto", "done", "nichts offen"))
+    now = next((i for i, st in enumerate(steps) if st[1] != "done"), None)
+    if now is not None:
+        steps[now] = (steps[now][0], "now", steps[now][2])
+        # vor dem Versandtag ist beim ersten Schritt noch nichts zu tun
+        waiting = now == 0 and not ex and bld.sepa_mail and today < send_on
+        phase = ("Warten auf Versand am " + f"{send_on:%d.%m.}") if waiting else steps[now][0]
+    else:
+        phase = "Alles erledigt"
+    return {"month": month, "steps": steps, "phase": phase, "done": now is None}

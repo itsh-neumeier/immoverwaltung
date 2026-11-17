@@ -69,6 +69,17 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <button class="sec">📧 Sammelauftrag für den kommenden Monat jetzt senden</button>
   </form>
 </details>{% endif %}
+<div class="card cycle" id="ablauf">
+  <div class="cycle-head"><b>Monatsablauf {{ cycle.month.strftime('%m/%Y') }}</b>
+    <span class="badge cycle-phase{{ ' ok' if cycle.done }}">Phase: {{ cycle.phase }}</span></div>
+  <ol class="cycle-steps">
+  {% for label, state, detail in cycle.steps %}
+    <li class="{{ state }}"><span class="cycle-icon">{{ {'done': '✓', 'now': '➜', 'todo': '○'}[state] }}</span>
+      <span><b>{{ label }}</b><br><span class="muted">{{ detail }}</span></span></li>
+  {% endfor %}
+  </ol>
+</div>
+
 <h2>Rücklagenkonto</h2>
 <div class="card">
   <div class="kpis">
