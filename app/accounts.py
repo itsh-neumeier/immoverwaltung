@@ -26,7 +26,8 @@ def _page(request: Request, name: str, **ctx) -> HTMLResponse:
 
 def _redirect(url: str, msg: str = "") -> RedirectResponse:
     if msg:
-        url += ("&" if "?" in url else "?") + "msg=" + quote(msg)
+        url, hash_, frag = url.partition("#")  # Meldung vor den Anker, sonst kommt sie nicht an
+        url += ("&" if "?" in url else "?") + "msg=" + quote(msg) + hash_ + frag
     return RedirectResponse(url, status_code=303)
 
 

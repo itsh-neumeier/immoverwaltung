@@ -119,6 +119,50 @@ class ApiKey(Base):
     uses: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class ReservePlan(Base):
+    """Feste Rücklage außerhalb der Nebenkostenabrechnung, z. B. Grundsteuer oder Wohngebäudeversicherung:
+    Jahresbetrag wird monatlich (bzw. viertel-/halbjährlich/jährlich) aufs Rücklagenkonto übertragen."""
+
+    __tablename__ = "reserve_plans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. GRUNDSTEUER
+    annual_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    interval: Mapped[int] = mapped_column(Integer, default=1)  # Monate je Zuführung: 1, 3, 6, 12
+    start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM erste Zuführung
+    due_note: Mapped[str] = mapped_column(String(120), default="")  # z. B. „15.02./15.05./15.08./15.11.“
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    @property
+    def rate(self) -> float:
+        return round((self.annual_amount or 0) * (self.interval or 1) / 12, 2)
+
+
+class BankLine(Base):
+    """Umsatz vom Haupt- oder Rücklagenkonto aus dem Kontoauszug (CAMT-XML oder CSV) – zum Abgleich der Überweisungen."""
+
+    __tablename__ = "bank_lines"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    account: Mapped[str] = mapped_column(String(10), default="reserve")  # main | reserve
+    pmtinf: Mapped[str] = mapped_column(String(100), default="")  # Sammler-Referenz (PmtInfId/MsgId) bei Sammelbuchung
+    batch_count: Mapped[int] = mapped_column(Integer, default=0)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    name: Mapped[str] = mapped_column(String(200), default="")
+    iban: Mapped[str] = mapped_column(String(34), default="")
+    e2e: Mapped[str] = mapped_column(String(100), default="")
+    info: Mapped[str] = mapped_column(String(100), default="")  # z. B. „Umsatz gebucht“ / „vorgemerkt“
+    digest: Mapped[str] = mapped_column(String(64), default="", index=True)  # gegen doppelten Import
+    entry_ids: Mapped[list] = mapped_column(JSON, default=list)  # zugeordnete Rücklagen-Buchungen
+    source: Mapped[str] = mapped_column(String(20), default="")  # camt.053.001.08, csv …
+
+
 class SepaExport(Base):
     """Erzeugte SEPA-Sammelüberweisung (pain.001) – zum Hochladen ins Online-Banking (Datei-Übergabe)."""
 
@@ -153,6 +197,10 @@ class ReserveEntry(Base):
     kind: Mapped[str] = mapped_column(String(10), default="in")  # in | out | start
     billing_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     party_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    period: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM bei festen Rücklagen (Plan)
+    e2e: Mapped[str] = mapped_column(String(35), default="", index=True)  # Kundenreferenz (End-to-End) der Überweisung
+    bank_line_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Umsatz Rücklagenkonto (Kontoauszug)
+    main_line_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Umsatz Hauptkonto (Kontoauszug)
     export_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     note: Mapped[str] = mapped_column(String(140), default="")  # Verwendungszweck bzw. Notiz
 

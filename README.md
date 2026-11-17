@@ -227,6 +227,20 @@ Für Kosten, die monatlich abgerechnet, aber erst später bezahlt werden (Wasser
 Weitere Optionen: Rücklagen erst ab einem Abrechnungsmonat, Anteil des Eigentümers ein- oder ausschließen
 (Verwendungszweck „EIGENTUEMER …“), Anfangsbestand buchen.
 
+**Feste Rücklagen außerhalb der Abrechnung** (z. B. Grundsteuer, Wohngebäudeversicherung): Jahresbetrag und Rhythmus
+eintragen (monatlich, vierteljährlich, halbjährlich, jährlich). Der Anteil erscheint ab dem Startmonat bei den offenen
+Zuführungen, z. B. `RUECKLAGE GRUNDSTEUER 11/2026 GID: 134 41,50 EUR`, und kommt mit in dieselbe SEPA-Datei.
+
+**Kontoabgleich:** Im Online-Banking die Umsätze von Haupt- und Rücklagenkonto exportieren, als
+**XML (CAMT V8 – gebuchte Umsätze)**, auch als ZIP; CSV geht ebenfalls. Unter „Rücklagen → Kontoabgleich“ hochladen.
+- Das Konto wird an der IBAN erkannt. Vom Hauptkonto werden nur Umsätze mit Bezug zum Rücklagenkonto übernommen.
+- Bereits eingelesene Umsätze werden beim erneuten Import nicht doppelt angelegt.
+- Zu jedem Umsatz schlägt die App die passende Überweisung vor. ★ heißt gleiche End-to-End- bzw. Sammler-Referenz.
+  Du bestätigst den Vorschlag oder wählst eine andere Buchung; eindeutige Treffer lassen sich gesammelt bestätigen.
+- Sind alle Überweisungen einer SEPA-Datei gefunden, gilt sie automatisch als ausgeführt.
+- „Noch nicht im Kontoauszug gefunden“ zeigt, was noch offen ist.
+- Fremde Umsätze (z. B. Zinsen oder frühere Gutschriften) lassen sich einer Position zubuchen oder ausblenden.
+
 ### Webhook-API (n8n, Home Assistant)
 
 Menü **API** (nur Super-Admin): API-Schlüssel anlegen (optional auf Gebäude beschränkt, optional ohne Recht auf

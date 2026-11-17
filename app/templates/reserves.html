@@ -84,8 +84,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     {% for i in items %}
     <tr>
       <td><input type="checkbox" class="rl-item" name="items" value="{{ i.key }}" data-amount="{{ i.amount }}" checked onchange="rlSum()"></td>
-      <td><a href="/admin/billings/{{ i.billing.id }}">{{ i.billing.period_start.strftime('%m/%Y') }}</a></td>
-      <td>{{ i.party.name }}{% if i.party.unit_id %} <span class="muted">({{ i.party.unit_id }})</span>{% endif %}</td>
+      <td>{% if i.billing %}<a href="/admin/billings/{{ i.billing.id }}">{{ i.period_text }}</a>{% else %}{{ i.period_text }}{% endif %}</td>
+      <td>{% if i.party %}{{ i.party.name }}{% if i.party.unit_id %} <span class="muted">({{ i.party.unit_id }})</span>{% endif %}{% else %}<span class="muted">feste Rücklage</span>{% endif %}</td>
       <td>{{ i.pos.name }}</td>
       <td class="r">{{ i.amount|eur }}</td>
       <td><code style="font-size:11px">{{ i.purpose }}</code></td>
@@ -102,8 +102,43 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   <p class="muted">Eine Sammelüberweisung (eine logische Datei) im Format {{ bld.sepa_format }}; Dateiname nur mit erlaubten
   Zeichen. Nach dem Hochladen und der Ausführung unten bei „SEPA-Dateien“ <b>✓ Ausgeführt</b> bestätigen – erst dann zählt der
   Betrag im Rücklagenkonto. Wird die Datei abgelehnt: „Verwerfen“, die Posten sind dann wieder offen.</p>
-  {% else %}<p class="muted">Keine offenen Beträge – alle abgeschlossenen Abrechnungen sind zurückgelegt.</p>{% endif %}
+  {% else %}<p class="muted">Keine offenen Beträge – alle abgeschlossenen Abrechnungen und festen Rücklagen sind zurückgelegt.</p>{% endif %}
 </form>
+
+<h2 id="feste">Feste Rücklagen (außerhalb der Abrechnung)</h2>
+<div class="card">
+  <p class="muted">Z. B. <b>Grundsteuer</b> oder <b>Wohngebäudeversicherung</b>: Jahresbetrag eintragen – der Anteil wird
+  im gewählten Rhythmus als offene Zuführung oben angeboten (ab Startmonat bis zum laufenden Monat) und mit in die
+  SEPA-Datei aufgenommen. Ist die Rechnung fällig: unten „Auszahlung aufs Hauptkonto“.</p>
+  {% if plans %}
+  <div class="scroll"><table>
+    <tr><th>Bezeichnung</th><th class="r">Jahresbetrag</th><th>Zuführung</th><th>ab</th><th>Fällig</th><th></th></tr>
+    {% for p in plans %}
+    <tr{% if not p.active %} class="muted"{% endif %}>
+      <td><b>{{ p.name }}</b>{% if not p.active %} <span class="badge">inaktiv</span>{% endif %}<br><span class="muted" style="font-size:12px">Zweck: {{ p.label or p.name|upper }}</span></td>
+      <td class="r">{{ p.annual_amount|eur }}</td><td>{{ p.rate|eur }} {{ intervals.get(p.interval, '') }}</td>
+      <td>{{ p.start[5:] }}/{{ p.start[:4] }}</td><td>{{ p.due_note }}</td>
+      <td style="white-space:nowrap"><a class="btn sec" href="?building={{ bld.id }}&plan={{ p.id }}#feste">Bearbeiten</a>
+        <form method="post" action="/admin/reserves/plan/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Löschen? Mit vorhandenen Buchungen wird sie nur deaktiviert.')"><button class="sec">Löschen</button></form></td>
+    </tr>{% endfor %}
+  </table></div>
+  {% endif %}
+  {% set ep = edit_plan %}
+  <details {% if ep or not plans %}open{% endif %} style="margin-top:8px"><summary><b>{{ 'Bearbeiten: ' ~ ep.name if ep else '+ Feste Rücklage anlegen' }}</b></summary>
+  <form method="post" action="/admin/reserves/plan" style="margin-top:8px">
+    <input type="hidden" name="building" value="{{ bld.id }}"><input type="hidden" name="id" value="{{ ep.id if ep else 0 }}">
+    <div class="grid">
+      <div><label>Bezeichnung</label><input type="text" name="name" required maxlength="200" value="{{ ep.name if ep else '' }}" placeholder="z. B. Grundsteuer"></div>
+      <div><label>Zweck im Verwendungszweck</label><input type="text" name="label" maxlength="60" value="{{ ep.label if ep else '' }}" placeholder="GRUNDSTEUER"></div>
+      <div><label>Jahresbetrag (€)</label><input type="text" name="annual_amount" inputmode="decimal" value="{{ ep.annual_amount|num(2) if ep else '' }}" placeholder="498,00" required></div>
+      <div><label>Zuführung</label><select name="interval">{% for k, v in intervals.items() %}<option value="{{ k }}" {% if ep and ep.interval == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
+      <div><label>ab Monat</label><input type="month" name="start" value="{{ ep.start if ep else today.strftime('%Y-%m') }}"></div>
+      <div><label>Fälligkeit (Info)</label><input type="text" name="due_note" maxlength="120" value="{{ ep.due_note if ep else '' }}" placeholder="15.02./15.05./15.08./15.11."></div>
+    </div>
+    {% if ep %}<div class="check"><input type="checkbox" name="active" id="rp-act" {% if ep.active %}checked{% endif %}><label for="rp-act" style="margin:0">aktiv</label></div>{% endif %}
+    <button>Speichern</button>
+  </form></details>
+</div>
 
 
 
@@ -168,14 +203,80 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   {% else %}<tr><td colspan="7" class="muted">Noch keine Dateien erzeugt.</td></tr>{% endfor %}
 </table></div>
 
+<h2 id="abgleich">Kontoabgleich</h2>
+<div class="card">
+  <p class="muted">Kontoauszug von <b>Hauptkonto</b> oder <b>Rücklagenkonto</b> hochladen – im Online-Banking unter Umsätze
+  exportieren als <b>XML (CAMT V8 – gebuchte Umsätze)</b> (auch ZIP oder CSV). Das Konto wird an der IBAN erkannt. Die App
+  sucht zu jedem Umsatz die passende Überweisung; du bestätigst den Vorschlag oder wählst eine andere Buchung.
+  Sind alle Überweisungen einer SEPA-Datei gefunden, gilt sie als ausgeführt.</p>
+  <form method="post" action="/admin/reserves/bank/import" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <input type="file" name="file" accept=".xml,.zip,.csv,application/xml,text/xml,text/csv,application/zip" required style="max-width:100%">
+    <button {% if problems %}disabled title="Erst Konten eintragen"{% endif %}>Kontoauszug einlesen</button>
+  </form>
+
+  {% if lines %}
+  <h3>Umsätze zuordnen ({{ lines|length }})</h3>
+  {% if sure %}<form method="post" action="/admin/reserves/bank/confirm-sure" style="margin-bottom:8px"><input type="hidden" name="building" value="{{ bld.id }}">
+    <button>✓ {{ sure }} eindeutige Treffer bestätigen</button> <span class="muted">(gleiche End-to-End-Referenz bzw. Sammler-Referenz)</span></form>{% endif %}
+  {% if lines|length > sure %}<form method="post" action="/admin/reserves/bank/hide-rest" style="margin-bottom:8px" onsubmit="return confirm('Alle Umsätze ohne passenden Vorschlag ausblenden? Lässt sich unter „Zugeordnete/ausgeblendete Umsätze“ wieder aufheben.')"><input type="hidden" name="building" value="{{ bld.id }}">
+    <button class="sec">Alle ohne Vorschlag ausblenden</button></form>{% endif %}
+  {% for l in lines %}{% set cs = cands[l.id] %}
+  <div class="bank-line">
+    <div class="bank-head">
+      <span class="badge">{{ 'Hauptkonto' if l.account == 'main' else 'Rücklagenkonto' }}</span>
+      <b>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</b>
+      <b style="color:{{ 'var(--ok)' if l.amount > 0 else 'var(--danger)' }}">{{ l.amount|eur }}</b>
+      <span>{{ l.name }}</span>
+    </div>
+    <div class="muted" style="font-size:12px">{{ l.purpose }}{% if l.e2e %} · Ref. {{ l.e2e }}{% endif %}{% if l.batch_count %} · Sammelbuchung ({{ l.batch_count }}){% endif %}</div>
+    <form method="post" action="/admin/reserves/bank/{{ l.id }}" class="bank-actions">
+      {% if cs %}
+      <select name="match" aria-label="passende Buchung">
+        {% for c in cs %}<option value="{{ c.value }}">{{ '★ ' if c.score == 100 else ('☆ ' if c.score >= 90 else '') }}{{ c.amount|eur }} · {{ c.date.strftime('%d.%m.%Y') if c.date else '' }} · {{ c.text[:110] }}</option>{% endfor %}
+      </select>
+      <button name="action" value="match">✓ Zuordnen</button>
+      {% else %}<span class="muted">Keine passende Überweisung gefunden.</span>{% endif %}
+      {% if l.account == 'reserve' and not cs %}
+      <select name="ref" aria-label="Position">{% for r in balances %}<option value="{{ r.ref }}">{{ r.name }}</option>{% endfor %}</select>
+      <button class="sec" name="action" value="book">als {{ 'Zuführung' if l.amount > 0 else 'Auszahlung' }} buchen</button>
+      {% endif %}
+      <button class="sec" name="action" value="ignore">Ausblenden</button>
+    </form>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  {% if missing %}
+  <h3>Noch nicht im Kontoauszug gefunden ({{ missing|length }})</h3>
+  <div class="scroll"><table>
+    <tr><th>Ausführung</th><th>Art</th><th>Position</th><th class="r">Betrag</th><th>Verwendungszweck</th></tr>
+    {% for e in missing %}<tr><td>{{ e.booking_date.strftime('%d.%m.%Y') if e.booking_date else '' }}</td><td>{{ kinds.get(e.kind, e.kind) }}</td>
+      <td>{{ names.get(e.ref, e.name) }}</td><td class="r">{{ e.amount|eur }}</td><td><span class="muted" style="font-size:12px">{{ e.note }}</span></td></tr>{% endfor %}
+  </table></div>
+  {% endif %}
+  {% if matched_lines %}
+  <details style="margin-top:8px"><summary class="muted">Zugeordnete / ausgeblendete Umsätze ({{ matched_lines|length }})</summary>
+  <div class="scroll"><table>
+    {% for l in matched_lines %}<tr><td>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</td>
+      <td>{{ 'Hauptkonto' if l.account == 'main' else 'Rücklagenkonto' }}</td><td class="r">{{ l.amount|eur }}</td>
+      <td><span class="muted" style="font-size:12px">{{ l.purpose[:120] }}</span></td>
+      <td>{% if l.ignored %}<span class="badge">ausgeblendet</span>{% else %}✓ {{ l.entry_ids|length }} Buchung(en){% endif %}</td>
+      <td><form method="post" action="/admin/reserves/bank/{{ l.id }}"><button class="sec" name="action" value="unlink">aufheben</button></form></td></tr>{% endfor %}
+  </table></div></details>
+  {% endif %}
+</div>
+
 <h2>Buchungen</h2>
 <div class="card scroll"><table>
   <tr><th>Datum</th><th>Art</th><th>Position</th><th>Partei</th><th class="r">Betrag</th><th>Verwendungszweck / Notiz</th><th></th></tr>
   {% for e in entries %}
   <tr><td>{{ e.booking_date.strftime('%d.%m.%Y') if e.booking_date else '' }}</td><td>{{ kinds.get(e.kind, e.kind) }}</td>
     <td>{{ names.get(e.ref, e.name) }}</td><td>{{ parties[e.party_id].name if e.party_id in parties else '' }}</td>
-    <td class="r">{{ e.amount|eur }}{% if e.export_id in open_ids %} <span class="muted">(vorgemerkt)</span>{% endif %}</td><td><span class="muted" style="font-size:12px">{{ e.note }}</span></td>
-    <td>{% if not e.export_id %}<form method="post" action="/admin/reserves/entry/{{ e.id }}/delete" onsubmit="return confirm('Buchung löschen?')"><button class="sec">Löschen</button></form>{% endif %}</td></tr>
+    <td class="r">{{ e.amount|eur }}{% if e.export_id in open_ids %} <span class="muted">(vorgemerkt)</span>{% endif %}
+      {% if e.main_line_id %}<span class="badge" title="im Kontoauszug des Hauptkontos gefunden">H ✓</span>{% endif %}
+      {% if e.bank_line_id %}<span class="badge" title="im Kontoauszug des Rücklagenkontos gefunden">R ✓</span>{% endif %}</td><td><span class="muted" style="font-size:12px">{{ e.note }}</span></td>
+    <td>{% if not e.export_id and not e.bank_line_id %}<form method="post" action="/admin/reserves/entry/{{ e.id }}/delete" onsubmit="return confirm('Buchung löschen?')"><button class="sec">Löschen</button></form>{% endif %}</td></tr>
   {% else %}<tr><td colspan="7" class="muted">Noch keine Buchungen.</td></tr>{% endfor %}
 </table></div>
 {% if not problems %}<details class="card" {% if problems %}open{% endif %}>

@@ -179,3 +179,10 @@ header.area-home{border-top:3px solid #16a34a}
 .home-hero{display:flex;gap:14px;align-items:center}
 .home-hero .avatar{width:64px;height:64px;font-size:1.8rem;border:2px solid var(--card,#fff);box-shadow:0 0 0 1px var(--line),0 2px 6px rgba(0,0,0,.08)}
 .home-hero h2{margin:0 0 2px}
+
+/* ---- Kontoabgleich ---- */
+.bank-line{border-top:1px solid var(--line);padding:10px 0}
+.bank-head{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
+.bank-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.bank-actions select{flex:1 1 260px;width:auto;min-width:0;margin:0}
+.bank-actions button{margin:0}
