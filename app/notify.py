@@ -28,6 +28,7 @@ EVENTS = {
     "push_admin_sent": ("Verwalter: Abrechnungen versendet (E-Mail / WhatsApp)", "1"),
     "push_admin_errors": ("Verwalter: Fehler (Versand, Postfach-Abruf, WhatsApp-Zustellung)", "1"),
     "push_admin_delivery": ("Verwalter: WhatsApp zugestellt / gelesen", ""),
+    "push_admin_budget": ("Super-Admin: Budget-Limit zu 80 % erreicht bzw. überschritten (Finanzen)", "1"),
 }
 
 

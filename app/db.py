@@ -552,6 +552,7 @@ SETTING_DEFAULTS = {
     "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)
     "fin_buffer": "100",  # Sicherheitspuffer in €
     "fin_seeded": "",
+    "fin_alerts_sent": "",  # bereits gemeldete Budget-Warnungen (JJJJ-MM:Kategorie:Stufe, kommagetrennt)
     "tenant_app_name": "Mein Zuhause",  # Name der App für Mieter  # beim Abschließen im Mieterportal veröffentlichen
     # Rechnungsimport
     "imap_senders": "",  # leer = IMAP_SENDER aus der .env (Standard awattar.de)

@@ -331,6 +331,45 @@ def overview(s: Session, today: Optional[date] = None) -> dict:
     }
 
 
+def budget_alerts(s: Session, today: Optional[date] = None) -> int:
+    """Push an Super-Admins, wenn ein Budget im Zeitraum 80 % erreicht bzw. überschritten ist – je Stufe einmal."""
+    from . import notify
+    from .db import User
+
+    if not notify.enabled(s, "push_admin_budget"):
+        return 0
+    data = overview(s, today)
+    sent = set(filter(None, (get_settings(s).get("fin_alerts_sent") or "").split(",")))
+    period = f"{data['start']:%Y-%m-%d}"
+    subs = notify.subs_for_users(s, [u.id for u in s.query(User).filter(User.role == "superadmin", User.active.is_(True))])
+    n = 0
+    for b in data["budgets"]:
+        c = b["cat"]
+        if not c.budget:
+            continue
+        level = 100 if b["used"] > c.budget else 80 if b["used"] >= 0.8 * c.budget else 0
+        key = f"{period}:{c.id}:{level}"
+        if not level or key in sent:
+            continue
+        sent.add(key)
+        if level == 100:
+            title, body = f"Budget überschritten: {c.name}", f"{_eur(b['used'])} von {_eur(c.budget)} ausgegeben"
+        else:
+            title, body = f"Budget fast aufgebraucht: {c.name}", f"{_eur(b['used'])} von {_eur(c.budget)} – noch {_eur(b['rest'])}"
+        if subs:
+            notify.send_to(s, subs, {"title": title, "body": body, "url": "/admin/finanzen", "tag": f"budget-{c.id}"},
+                           "high" if level == 100 else "normal")
+        n += 1
+    keep = sorted(k for k in sent if k.startswith(period))  # nur den laufenden Zeitraum merken
+    save_settings(s, {"fin_alerts_sent": ",".join(keep)})
+    s.commit()
+    return n
+
+
+def _eur(x: float) -> str:
+    return f"{x:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def suggest_budgets(s: Session, today: Optional[date] = None, only_empty: bool = True) -> int:
     """Budget = Durchschnitt der letzten 3 vollen Monate (auf 10 € aufgerundet)."""
     data = overview(s, today)
@@ -396,6 +435,8 @@ async def finance_import(request: Request, file: UploadFile, s: Session = Depend
         return _redirect("/admin/finanzen", f"Import fehlgeschlagen: {e}")
     seed(s)
     new, dup = ingest(s, txns, bals)
+    if new:
+        budget_alerts(s)
     msg = f"Finanzen: {new} Umsätze neu" + (f", {dup} schon vorhanden" if dup else "")
     if not finance_iban(s):
         msg = "Bitte zuerst das Hauptkonto (IBAN) eintragen – unten unter Einstellungen."
@@ -453,6 +494,21 @@ async def finance_categories(request: Request, s: Session = Depends(get_session)
                           rules=str(form.get("new_rules", "")).strip()[:4000], color=COLORS[n % len(COLORS)], sort=n))
     s.commit()
     return _redirect("/admin/finanzen#kategorien", "Kategorien gespeichert")
+
+
+@router.post("/admin/finanzen/budget/{cid}")
+async def finance_budget(request: Request, cid: int, s: Session = Depends(get_session)):
+    """Limit einer Budget-Kategorie direkt setzen (leer oder 0 = kein Limit)."""
+    from .render import parse_float
+
+    c = s.get(FinCategory, cid)
+    if c is None:
+        raise HTTPException(404)
+    form = await request.form()
+    c.budget = round(max(parse_float(form.get("budget")) or 0.0, 0.0), 2)
+    s.commit()
+    msg = f"Limit {c.name}: {_eur(c.budget)} pro Monat" if c.budget else f"Limit {c.name} entfernt"
+    return _redirect("/admin/finanzen#budgets", msg)
 
 
 @router.post("/admin/finanzen/suggest")

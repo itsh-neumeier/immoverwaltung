@@ -68,6 +68,17 @@ def test_spielraum_budgets_recurring_and_rules():
             kiosk = s.query(FinTxn).filter(FinTxn.name == "Kiosk Ecke").one()
             kid = kiosk.id
             leb_id = leb["cat"].id
+        # Limit direkt an der Budget-Karte setzen, Warnungen 80 % / überschritten je Stufe einmal
+        r = c.post(f"/admin/finanzen/budget/{leb_id}", data={"budget": "180,00"})
+        assert "Limit Lebensmittel: 180,00 € pro Monat" in r.text and 'id="lim-%d"' % leb_id in r.text
+        with SessionLocal() as s:
+            assert s.get(FinCategory, leb_id).budget == 180.0
+            assert finance.budget_alerts(s, date(2026, 11, 12)) == 1  # 150 von 180 = 83 %
+            assert finance.budget_alerts(s, date(2026, 11, 12)) == 0  # schon gemeldet
+        c.post(f"/admin/finanzen/budget/{leb_id}", data={"budget": "120"})
+        with SessionLocal() as s:
+            assert finance.budget_alerts(s, date(2026, 11, 12)) == 1  # jetzt überschritten
+        c.post(f"/admin/finanzen/budget/{leb_id}", data={"budget": "200"})
         page = c.get("/admin/finanzen?show=offen").text
         assert "Kiosk Ecke" in page and "Spielraum bis 30.11." in page
         r = c.post(f"/admin/finanzen/txn/{kid}", data={"category": leb_id, "remember": "1"})

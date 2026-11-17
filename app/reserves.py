@@ -967,6 +967,7 @@ async def bank_import(request: Request, file: UploadFile, s: Session = Depends(g
         n, _ = finance.ingest(s, txns, bals)
         if n:
             msg += f" · Finanzen: {n} Umsätze"
+            finance.budget_alerts(s)
     return _redirect(back, msg)
 
 

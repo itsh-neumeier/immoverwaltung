@@ -37,7 +37,7 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
   {% endif %}
 </div>
 
-<h2>Budgets im Zeitraum</h2>
+<h2 id="budgets">Budgets im Zeitraum</h2>
 <div class="card">
   {% if d.budgets %}
   <div class="budget-list">
@@ -48,13 +48,18 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
         <span class="budget-rest" {% if b.rest is not none and b.rest < 0 %}style="color:var(--danger)"{% endif %}>
           {% if b.rest is not none %}{{ 'noch ' if b.rest >= 0 else 'überzogen ' }}{{ (b.rest if b.rest >= 0 else -b.rest)|eur }}{% else %}<span class="muted">kein Budget</span>{% endif %}</span></div>
       {% if b.cat.budget %}<div class="bar"><span style="width:{{ b.pct }}%;background:{{ 'var(--danger)' if b.pct >= 100 else ('#f59e0b' if b.pct >= 80 else b.cat.color) }}"></span></div>{% endif %}
-      <div class="muted" style="font-size:12px">Ø letzte 3 Monate: {{ b.avg|eur }}</div>
+      <form method="post" action="/admin/finanzen/budget/{{ b.cat.id }}" class="budget-limit">
+        <label for="lim-{{ b.cat.id }}">Limit</label>
+        <input id="lim-{{ b.cat.id }}" type="text" name="budget" inputmode="decimal" value="{{ b.cat.budget|num(2) if b.cat.budget else '' }}" placeholder="kein Limit">
+        <span class="muted">€/Monat</span><button class="sec" title="Limit speichern">✓</button>
+      </form>
+      <div class="muted" style="font-size:12px">Ø letzte 3 Monate: {{ b.avg|eur }}{% if b.avg and not b.cat.budget %} – Vorschlag: {{ ((b.avg + 9.99) // 10 * 10)|eur }}{% endif %}</div>
     </div>
   {% endfor %}
   </div>
   <form method="post" action="/admin/finanzen/suggest" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-    <button class="sec">Leere Budgets aus Ø der letzten 3 Monate vorschlagen</button>
-    <button class="sec" name="all" value="1" onclick="return confirm('Alle Budgets durch den Durchschnitt der letzten 3 Monate ersetzen?')">Alle neu berechnen</button>
+    <button class="sec">Kategorien ohne Limit: Ø der letzten 3 Monate übernehmen</button>
+    <button class="sec" name="all" value="1" onclick="return confirm('Auch deine selbst gesetzten Limits durch den Durchschnitt der letzten 3 Monate ersetzen?')">Alle Limits neu berechnen</button>
   </form>
   {% else %}<p class="muted">Keine Budget-Kategorien.</p>{% endif %}
 </div>
