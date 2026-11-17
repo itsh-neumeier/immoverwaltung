@@ -187,7 +187,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <td class="r">{{ r.ist|eur }}</td><td class="r">{{ r.out12|eur }}</td>
       <td class="r"><b {% if r.stand < 0 %}style="color:var(--danger)"{% endif %}>{{ r.stand|eur }}</b></td>
       <td style="white-space:nowrap"><a class="btn sec" href="?building={{ bld.id }}&plan={{ p.id }}#feste">Bearbeiten</a>
-        <form method="post" action="/admin/reserves/plan/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Löschen? Mit vorhandenen Buchungen wird der Topf nur deaktiviert.')"><button class="sec">Löschen</button></form></td>
+        <form method="post" action="/admin/reserves/plan/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Topf löschen? Steht er auf 0 €, wird er entfernt und sein Buchungsverlauf archiviert – sonst nur deaktiviert.')"><button class="sec">Löschen</button></form></td>
     </tr>{% endfor %}
     {% set dsum = plan_rows|selectattr('plan.funding', 'equalto', 'dauerauftrag')|selectattr('plan.active')|map(attribute='plan.standing_order')|sum %}
     {% set ssum = plan_rows|selectattr('plan.active')|sum(attribute='soll') %}

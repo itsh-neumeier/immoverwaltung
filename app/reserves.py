@@ -25,6 +25,7 @@ from .db import (Allocation, BankLine, Billing, Building, FixedCost, Party, Rese
                  get_session)
 
 router = APIRouter()
+ARCHIVE = "ar:0"  # Buchungsverlauf gelöschter Töpfe (Summe 0 – bleibt für den Kontoabgleich erhalten)
 INTERVALS = {1: "monatlich", 3: "vierteljährlich", 6: "halbjährlich", 12: "jährlich"}
 KINDS = {"in": "Zuführung", "out": "Auszahlung / Entnahme", "start": "Anfangsbestand"}
 
@@ -128,6 +129,7 @@ def all_positions(s: Session) -> dict[str, str]:
     names = {f"fc:{f.id}": f.name for f in s.query(FixedCost)}
     names.update({f"al:{a.id}": a.name for a in s.query(Allocation)})
     names.update({f"rp:{p.id}": p.name for p in s.query(ReservePlan)})
+    names[ARCHIVE] = "Archiv (gelöschte Töpfe)"
     return names
 
 
@@ -253,6 +255,8 @@ def balances(s: Session, building: Building) -> list[dict]:
     for r in rows.values():
         for k in ("in", "out", "total", "planned_in", "planned_out"):
             r[k] = round(r[k], 2)
+    if (a := rows.get(ARCHIVE)) and not (a["total"] or a["planned_in"] or a["planned_out"]):
+        rows.pop(ARCHIVE)  # Archiv nur zeigen, wenn dort (versehentlich) noch Geld liegt
     return sorted(rows.values(), key=lambda r: r["name"].lower())
 
 
@@ -604,13 +608,22 @@ def plan_delete(pid: int, s: Session = Depends(get_session)):
     if p is None or not scope.can(p.building_id):
         raise HTTPException(404)
     back = f"/admin/reserves?building={p.building_id}#feste"
-    if s.query(ReserveEntry).filter(ReserveEntry.ref == f"rp:{p.id}").first():
+    ref = f"rp:{p.id}"
+    entries = s.query(ReserveEntry).filter(ReserveEntry.ref == ref).all()
+    total = round(sum(e.amount for e in entries), 2)
+    if entries and abs(total) >= 0.005:
         p.active = False
         s.commit()
-        return _redirect(back, "Es gibt schon Buchungen – Rücklage wurde deaktiviert statt gelöscht.")
+        return _redirect(back, f"„{p.name}“ hat noch {_de(total)} € – Topf deaktiviert. Zum Löschen erst den Stand per "
+                               "Umbuchung auf 0 bringen, dann erneut löschen.")
+    if any(e.export_id in open_exports(s, s.get(Building, p.building_id)) for e in entries):
+        return _redirect(back, f"„{p.name}“ hat noch eine offene SEPA-Datei – erst ausführen oder verwerfen.")
+    for e in entries:  # Verlauf ins Archiv (Summe 0), Verknüpfungen zum Kontoauszug bleiben erhalten
+        e.ref, e.name = ARCHIVE, f"{p.name} (gelöscht)"[:200]
+    name = p.name
     s.delete(p)
     s.commit()
-    return _redirect(back, "Gelöscht")
+    return _redirect(back, f"„{name}“ gelöscht" + (f" – {len(entries)} alte Buchungen archiviert" if entries else ""))
 
 
 # --------------------------------------------------------------------------- Kontoabgleich (CAMT/CSV)

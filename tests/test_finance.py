@@ -327,3 +327,28 @@ def test_manual_transfer_with_token_for_savings_account():
             assert s.query(SepaExport).one().status == "done"
             linked = {l.purpose[:20] for l in s.query(BankLine) if l.entry_ids}
             assert linked == {purpose[:20]}  # nur die Überweisung mit Kennung, der Köder bleibt offen
+
+
+def test_delete_pot_with_zero_balance_archives_history():
+    from app import reserves
+    from app.db import ReserveEntry, ReservePlan
+
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            bid = s.query(Building).first().id
+            for n in ("Haushalt · Hühnerfutter", "Abo · Office 365"):
+                s.add(ReservePlan(building_id=bid, name=n, label=n.upper(), funding="sepa", active=True, start="2026-01"))
+            s.commit()
+            hf, off = (s.query(ReservePlan).filter(ReservePlan.name == n).one().id for n in ("Haushalt · Hühnerfutter", "Abo · Office 365"))
+        for ref, kind, amt in ((f"rp:{hf}", "in", "545"), (f"rp:{hf}", "out", "545"), (f"rp:{off}", "in", "144")):
+            c.post("/admin/reserves/entry", data={"building": bid, "kind": kind, "ref": ref, "amount": amt, "note": "x"})
+        r = c.post(f"/admin/reserves/plan/{off}/delete")
+        assert "hat noch 144,00 €" in r.text  # mit Geld: nur deaktiviert
+        r = c.post(f"/admin/reserves/plan/{hf}/delete")
+        assert "„Haushalt · Hühnerfutter“ gelöscht – 2 alte Buchungen archiviert" in r.text
+        with SessionLocal() as s:
+            assert s.get(ReservePlan, hf) is None and s.get(ReservePlan, off).active is False
+            assert s.query(ReserveEntry).filter(ReserveEntry.ref == reserves.ARCHIVE).count() == 2
+            names = {r["name"] for r in reserves.balances(s, s.get(Building, bid))}
+            assert names == {"Abo · Office 365"}  # Archiv (Summe 0) unsichtbar
