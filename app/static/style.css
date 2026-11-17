@@ -188,3 +188,10 @@ header.area-home{border-top:3px solid #16a34a}
 .bank-actions button{margin:0}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 .kpi{font-size:1.5rem;font-weight:700}
+/* ---- Finanzen ---- */
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle}
+.budget-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.budget-head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.budget-rest{margin-left:auto;font-weight:600}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:6px 0 4px}
+.bar span{display:block;height:100%;border-radius:4px}

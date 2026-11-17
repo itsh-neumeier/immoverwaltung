@@ -151,6 +151,45 @@ class ReservePlan(Base):
         return round((self.annual_amount or 0) * (self.interval or 1) / 12, 2)
 
 
+class FinCategory(Base):
+    """Kategorie der privaten Finanzplanung (Hauptkonto): Budget je Monat und Regeln zum automatischen Zuordnen."""
+
+    __tablename__ = "fin_categories"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    kind: Mapped[str] = mapped_column(String(20), default="variabel")  # variabel | fix | einnahme | ignorieren
+    budget: Mapped[float] = mapped_column(Float, default=0.0)  # €/Monat (bei variabel)
+    rules: Mapped[str] = mapped_column(Text, default="")  # Stichworte je Zeile/Komma; zweck:… / iban:…
+    color: Mapped[str] = mapped_column(String(7), default="#64748b")
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class FinTxn(Base):
+    """Umsatz des Hauptkontos (aus dem CAMT-/CSV-Kontoauszug) für die Finanzplanung."""
+
+    __tablename__ = "fin_txns"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_iban: Mapped[str] = mapped_column(String(34), default="", index=True)
+    booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    iban: Mapped[str] = mapped_column(String(34), default="")
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    digest: Mapped[str] = mapped_column(String(64), default="", index=True)
+    category_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # von Hand gesetzt (hat Vorrang)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class FinBalance(Base):
+    """Kontostand laut Bank (Endsaldo eines Tages) – Grundlage für den Spielraum."""
+
+    __tablename__ = "fin_balances"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_iban: Mapped[str] = mapped_column(String(34), default="", index=True)
+    day: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 class BankLine(Base):
     """Umsatz vom Haupt- oder Rücklagenkonto aus dem Kontoauszug (CAMT-XML oder CSV) – zum Abgleich der Überweisungen."""
 
@@ -494,6 +533,11 @@ SETTING_DEFAULTS = {
     "admin_app_name": "ImmoVerwaltung",
     "admin_app_color": "#1e3a8a",  # Farbe der oberen Leiste (installierte App)
     "tenant_app_color": "#16a34a",
+    # Finanzplanung (Hauptkonto)
+    "fin_iban": "",  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
+    "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)
+    "fin_buffer": "100",  # Sicherheitspuffer in €
+    "fin_seeded": "",
     "tenant_app_name": "Mein Zuhause",  # Name der App für Mieter  # beim Abschließen im Mieterportal veröffentlichen
     # Rechnungsimport
     "imap_senders": "",  # leer = IMAP_SENDER aus der .env (Standard awattar.de)

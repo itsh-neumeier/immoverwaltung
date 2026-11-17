@@ -248,6 +248,20 @@ Soll ab, steht ein Hinweis dabei. Die **Kontostände** von Haupt- und Rücklagen
 - „Noch nicht im Kontoauszug gefunden“ zeigt, was noch offen ist.
 - Fremde Umsätze (z. B. Zinsen oder frühere Gutschriften) lassen sich einer Position zubuchen oder ausblenden.
 
+### Finanzen (Budget und Spielraum, nur Super-Admin)
+
+Wie viel kann bis Monatsende – oder bis zum nächsten Gehalt – noch ausgegeben werden, ohne ins Minus zu gehen?
+Grundlage ist der Kontoauszug des Hauptkontos (CAMT/CSV). Derselbe Upload füllt auch den Rücklagen-Abgleich.
+- **Spielraum:** der tiefste voraussichtliche Kontostand bis Periodenende minus Puffer. Er ergibt sich aus Kontostand
+  plus erwarteten Eingängen minus erwarteten Fixkosten, tagesgenau gerechnet. Angezeigt werden auch der Betrag
+  pro Tag und „frei nach Budgets“.
+- **Budgets je Kategorie** (Lebensmittel, Drogerie, Tanken …) mit Fortschrittsbalken. Als Vorschlag dient der
+  Durchschnitt der letzten 3 Monate.
+- **Wiederkehrende Einnahmen und Fixkosten** (Gehalt, Kredit, Versicherungen, Daueraufträge) werden erkannt:
+  mindestens 3 der letzten 4 Monate mit ähnlichem Betrag. Noch nicht gebuchte fließen in die Vorschau ein.
+- **Kategorien mit Regeln** (Empfängername, `zweck:…`, `iban:…`, `*` als Platzhalter). Umsätze lassen sich per Klick
+  zuordnen; „als Regel merken“ übernimmt den Empfänger für künftige Umsätze.
+
 ### Webhook-API (n8n, Home Assistant)
 
 Menü **API** (nur Super-Admin): API-Schlüssel anlegen (optional auf Gebäude beschränkt, optional ohne Recht auf

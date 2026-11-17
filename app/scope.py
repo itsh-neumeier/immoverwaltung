@@ -14,7 +14,7 @@ auth_enabled: ContextVar = ContextVar("auth_enabled", default=False)
 
 # nur für Super-Admins (globale Einstellungen, Benutzer, Schnittstellen)
 SUPER_ONLY = ("/admin/users", "/admin/settings", "/admin/whatsapp", "/admin/mailbox", "/admin/vrm",
-              "/admin/victron", "/admin/api-keys")
+              "/admin/victron", "/admin/api-keys", "/admin/finanzen")
 
 
 def allowed_buildings() -> Optional[set]:

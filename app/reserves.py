@@ -826,21 +826,11 @@ def _store_balances(bld: Building, balances: list, ibans: dict) -> None:
             bld.bank_reserve_open, bld.bank_reserve_open_date = b.amount, b.day
 
 
-@router.post("/admin/reserves/bank/import")
-async def bank_import(request: Request, file: UploadFile, s: Session = Depends(get_session)):
-    form = await request.form()
-    bld = _building(s, form.get("building"))
-    back = f"/admin/reserves?building={bld.id}#abgleich"
-    data = await file.read()
-    bals: list = []
-    try:
-        txns = bankimport.parse(file.filename or "", data, bals)
-    except bankimport.ImportError_ as e:
-        return _redirect(back, f"Import fehlgeschlagen: {e}")
+def ingest_bank(s: Session, bld: Building, txns: list, bals: list, since: Optional[date] = None) -> str:
+    """Umsätze/Kontostände eines Auszugs für den Rücklagen-Abgleich übernehmen; liefert eine Rückmeldung."""
     main_iban, reserve_iban = sepa.normalize_iban(bld.account_iban), sepa.normalize_iban(bld.reserve_iban)
     accounts_ = {main_iban: "main", reserve_iban: "reserve"}
     accounts_.pop("", None)
-    since = _date(form.get("since"), date.min) if form.get("since") else None
     _store_balances(bld, bals, accounts_)
     new = skipped = foreign = irrelevant = old = 0
     seen = {d for (d,) in s.query(BankLine.digest).filter(BankLine.building_id == bld.id)}
@@ -880,6 +870,29 @@ async def bank_import(request: Request, file: UploadFile, s: Session = Depends(g
     sure = sum(1 for l in open_lines(s, bld) if (c := candidates(s, l, 1)) and c[0]["score"] >= SURE)
     if sure:
         msg += f" · {sure} eindeutige Treffer – bitte prüfen und bestätigen"
+    return msg
+
+
+@router.post("/admin/reserves/bank/import")
+async def bank_import(request: Request, file: UploadFile, s: Session = Depends(get_session)):
+    from . import finance
+
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = f"/admin/reserves?building={bld.id}#abgleich"
+    data = await file.read()
+    bals: list = []
+    try:
+        txns = bankimport.parse(file.filename or "", data, bals)
+    except bankimport.ImportError_ as e:
+        return _redirect(back, f"Import fehlgeschlagen: {e}")
+    since = _date(form.get("since"), date.min) if form.get("since") else None
+    msg = ingest_bank(s, bld, txns, bals, since)
+    if scope.is_super():  # Hauptkonto-Umsätze auch für die Finanzplanung übernehmen
+        finance.seed(s)
+        n, _ = finance.ingest(s, txns, bals)
+        if n:
+            msg += f" · Finanzen: {n} Umsätze"
     return _redirect(back, msg)
 
 

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import accounts, api, auth, reserves, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
+from . import accounts, api, auth, finance, reserves, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
 from .config import config
 from .db import (Allocation, Billing, Building, FixedCost, IgnoredInvoice, Party, User, SessionLocal, get_session, get_settings,
                  init_db, save_settings)
@@ -64,6 +64,7 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 app.include_router(accounts.router)
 app.include_router(api.router)
 app.include_router(reserves.router)
+app.include_router(finance.router)
 
 
 # --------------------------------------------------------------------------- Helfer

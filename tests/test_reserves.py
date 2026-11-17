@@ -125,8 +125,8 @@ def camt(own_iban, entries, opening=None, closing=None):
         ntry += f"""<Ntry><Amt Ccy="EUR">{abs(e['amount']):.2f}</Amt><CdtDbtInd>{cd}</CdtDbtInd><Sts><Cd>BOOK</Cd></Sts>
 <BookgDt><Dt>{e.get('date', '2026-10-30')}</Dt></BookgDt><ValDt><Dt>2026-10-30</Dt></ValDt><AcctSvcrRef>R{i}</AcctSvcrRef>
 <AddtlNtryInf>{e.get('info', 'GUTSCHRIFT')}</AddtlNtryInf><NtryDtls><TxDtls><Refs>{refs}<Prtry><Tp>A</Tp><Ref>x</Ref></Prtry></Refs>
-<Amt Ccy="EUR">{abs(e['amount']):.2f}</Amt><RltdPties><Dbtr><Pty><Nm>Timo Muster</Nm></Pty></Dbtr><DbtrAcct><Id><IBAN>{e.get('other', GIRO)}</IBAN></Id></DbtrAcct>
-<Cdtr><Pty><Nm>Timo Muster</Nm></Pty></Cdtr><CdtrAcct><Id><IBAN>{e.get('other', GIRO)}</IBAN></Id></CdtrAcct></RltdPties>
+<Amt Ccy="EUR">{abs(e['amount']):.2f}</Amt><RltdPties><Dbtr><Pty><Nm>{e.get('name', 'Timo Muster')}</Nm></Pty></Dbtr><DbtrAcct><Id><IBAN>{e.get('other', GIRO)}</IBAN></Id></DbtrAcct>
+<Cdtr><Pty><Nm>{e.get('name', 'Timo Muster')}</Nm></Pty></Cdtr><CdtrAcct><Id><IBAN>{e.get('other', GIRO)}</IBAN></Id></CdtrAcct></RltdPties>
 <RmtInf><Ustrd>{e.get('purpose', '')}</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>"""
     return f"""<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.052.001.08">
 <BkToCstmrAcctRpt><GrpHdr><MsgId>1</MsgId><CreDtTm>2026-10-31T00:00:00</CreDtTm></GrpHdr><Rpt><Id>1</Id>

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Finanzen{% endblock %}
+{% block content %}
+<h1>Finanzen</h1>
+<p class="muted">Wie viel kann ich bis {{ 'zum nächsten Gehalt' if d.mode == 'seit Gehaltseingang' else 'Monatsende' }} noch
+ausgeben, ohne ins Minus zu gehen? Grundlage: Kontoauszug des Hauptkontos (CAMT/CSV), Budgets je Kategorie und erkannte
+regelmäßige Einnahmen und Fixkosten.</p>
+
+{% if not d.iban %}
+<div class="warn">Noch kein Hauptkonto hinterlegt – unten unter <a href="#einstellungen">Einstellungen</a> die IBAN eintragen
+(oder bei <a href="/admin/reserves">Rücklagen → Konten</a>).</div>
+{% elif not d.count %}
+<div class="warn">Noch keine Umsätze – unten den Kontoauszug des Hauptkontos hochladen (Online-Banking → Umsätze →
+Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
+{% endif %}
+
+<div class="card">
+  <div class="kpis">
+    <div><div class="muted">Kontostand{% if d.as_of %} ({{ d.as_of.strftime('%d.%m.%Y') }}){% endif %}</div>
+      <div class="kpi" {% if d.balance is not none and d.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ d.balance|eur if d.balance is not none else '–' }}</div></div>
+    <div><div class="muted">Spielraum bis {{ d.end.strftime('%d.%m.') }}</div>
+      <div class="kpi" style="color:{{ 'var(--danger)' if d.room is not none and d.room < 0 else 'var(--ok)' }}">{{ d.room|eur if d.room is not none else '–' }}</div>
+      {% if d.per_day is not none and d.per_day > 0 %}<div class="muted">{{ d.per_day|eur }} pro Tag · noch {{ d.days_left }} Tage</div>
+      {% elif d.room is not none %}<div class="muted">noch {{ d.days_left }} Tage</div>{% endif %}</div>
+    <div><div class="muted">davon für Budgets reserviert</div><div class="kpi">{{ d.budget_rest|eur }}</div></div>
+    <div><div class="muted">frei (nach Budgets)</div>
+      <div class="kpi" style="color:{{ 'var(--danger)' if d.free is not none and d.free < 0 else 'var(--ok)' }}">{{ d.free|eur if d.free is not none else '–' }}</div></div>
+  </div>
+  {% if d.low is not none %}
+  <p class="muted" style="margin-bottom:0">Zeitraum {{ d.start.strftime('%d.%m.') }}–{{ d.end.strftime('%d.%m.%Y') }} ({{ d.mode }}).
+  Tiefster voraussichtlicher Kontostand: <b {% if d.low < 0 %}style="color:var(--danger)"{% endif %}>{{ d.low|eur }}</b>
+  {% if d.low_day %}am {{ d.low_day.strftime('%d.%m.') }}{% endif %} – nach erwarteten Eingängen {{ d.exp_in|eur }} und Fixkosten {{ d.exp_out|eur }}.
+  Spielraum = tiefster Stand minus Puffer {{ d.buffer|eur }}. Am Periodenende (alle Budgets ausgeschöpft): {{ d.proj_end|eur }}.
+  {% if d.as_of and d.as_of < d.end %}Umsätze nach dem {{ d.as_of.strftime('%d.%m.') }} sind noch nicht enthalten – für einen aktuellen Stand neuen Auszug hochladen.{% endif %}</p>
+  {% if d.room is not none and d.room < 0 %}<div class="warn" style="margin-top:10px">⚠ Mit den erwarteten Fixkosten rutscht das Konto
+  voraussichtlich ins Minus – Ausgaben zurückstellen oder Geld vom Rücklagenkonto holen.</div>{% endif %}
+  {% endif %}
+</div>
+
+<h2>Budgets im Zeitraum</h2>
+<div class="card">
+  {% if d.budgets %}
+  <div class="budget-list">
+  {% for b in d.budgets %}
+    <div class="budget">
+      <div class="budget-head"><span class="dot" style="background:{{ b.cat.color }}"></span><b>{{ b.cat.name }}</b>
+        <span class="muted">{{ b.used|eur }}{% if b.cat.budget %} von {{ b.cat.budget|eur }}{% endif %}</span>
+        <span class="budget-rest" {% if b.rest is not none and b.rest < 0 %}style="color:var(--danger)"{% endif %}>
+          {% if b.rest is not none %}{{ 'noch ' if b.rest >= 0 else 'überzogen ' }}{{ (b.rest if b.rest >= 0 else -b.rest)|eur }}{% else %}<span class="muted">kein Budget</span>{% endif %}</span></div>
+      {% if b.cat.budget %}<div class="bar"><span style="width:{{ b.pct }}%;background:{{ 'var(--danger)' if b.pct >= 100 else ('#f59e0b' if b.pct >= 80 else b.cat.color) }}"></span></div>{% endif %}
+      <div class="muted" style="font-size:12px">Ø letzte 3 Monate: {{ b.avg|eur }}</div>
+    </div>
+  {% endfor %}
+  </div>
+  <form method="post" action="/admin/finanzen/suggest" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="sec">Leere Budgets aus Ø der letzten 3 Monate vorschlagen</button>
+    <button class="sec" name="all" value="1" onclick="return confirm('Alle Budgets durch den Durchschnitt der letzten 3 Monate ersetzen?')">Alle neu berechnen</button>
+  </form>
+  {% else %}<p class="muted">Keine Budget-Kategorien.</p>{% endif %}
+</div>
+
+<h2>Erwartet bis {{ d.end.strftime('%d.%m.') }}</h2>
+<div class="card scroll">
+  {% if d.expected %}<table>
+    <tr><th>voraussichtlich</th><th>Empfänger / Auftraggeber</th><th>Kategorie</th><th class="r">Betrag</th></tr>
+    {% for e in d.expected %}<tr><td>{{ e.due.strftime('%d.%m.') }}</td><td>{{ e.name[:60] }}</td>
+      <td>{{ e.category.name if e.category else '–' }}</td>
+      <td class="r" style="color:{{ 'var(--ok)' if e.amount > 0 else 'inherit' }}">{{ e.amount|eur }}</td></tr>{% endfor %}
+  </table>
+  <p class="muted">Regelmäßige Zahlungen (mind. 3 der letzten 4 Monate, ähnlicher Betrag), die im Zeitraum noch nicht gebucht sind.</p>
+  {% else %}<p class="muted">Keine weiteren regelmäßigen Zahlungen erwartet.</p>{% endif %}
+</div>
+
+<h2 id="umsaetze">Umsätze im Zeitraum <span class="muted" style="font-size:.9rem">Eingänge {{ d.income|eur }} · Ausgaben {{ d.outgo|eur }}</span></h2>
+<div class="card">
+  <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+    <a class="btn {{ '' if show == 'offen' else 'sec' }}" href="?show=offen#umsaetze">nur ohne Kategorie</a>
+    <a class="btn {{ 'sec' if show == 'offen' else '' }}" href="?#umsaetze">alle</a>
+  </div>
+  {% for t in txns %}{% set c = d.matcher.category(t) %}
+  <div class="bank-line">
+    <div class="bank-head"><b>{{ t.booking_date.strftime('%d.%m.') if t.booking_date else '' }}</b>
+      <b style="color:{{ 'var(--ok)' if t.amount > 0 else 'inherit' }}">{{ t.amount|eur }}</b><span>{{ t.name }}</span>
+      {% if c %}<span class="badge" style="border-color:{{ c.color }}">{{ c.name }}{% if t.category_id %} ✎{% endif %}</span>{% endif %}</div>
+    <div class="muted" style="font-size:12px">{{ t.purpose[:160] }}</div>
+    <form method="post" action="/admin/finanzen/txn/{{ t.id }}" class="bank-actions">
+      <input type="hidden" name="show" value="{{ show }}">
+      <select name="category" aria-label="Kategorie"><option value="">– keine Kategorie –</option>
+        {% for k in d.cats %}<option value="{{ k.id }}" {% if c and c.id == k.id %}selected{% endif %}>{{ k.name }}</option>{% endfor %}</select>
+      <label class="check" style="margin:0"><input type="checkbox" name="remember" value="1" {% if not c %}checked{% endif %}> als Regel merken</label>
+      <button class="sec">Speichern</button>
+    </form>
+  </div>
+  {% else %}<p class="muted">Keine Umsätze{{ ' ohne Kategorie' if show == 'offen' }} im Zeitraum.</p>{% endfor %}
+</div>
+
+{% if d.uncategorized %}
+<h2>Häufig ohne Kategorie (letzte 3 Monate)</h2>
+<div class="card scroll"><table>
+  <tr><th>Empfänger</th><th class="r">Anzahl</th><th class="r">Summe</th><th>zuordnen</th></tr>
+  {% for u in d.uncategorized %}<tr><td>{{ u.name[:50] }}</td><td class="r">{{ u.count }}</td><td class="r">{{ u.sum|eur }}</td>
+    <td><form method="post" action="/admin/finanzen/txn/{{ u.example.id }}" style="display:flex;gap:6px">
+      <input type="hidden" name="remember" value="1">
+      <select name="category" style="margin:0">{% for k in d.cats %}<option value="{{ k.id }}">{{ k.name }}</option>{% endfor %}</select>
+      <button class="sec">als Regel</button></form></td></tr>{% endfor %}
+</table></div>
+{% endif %}
+
+<h2 id="kategorien">Kategorien &amp; Regeln</h2>
+<form method="post" action="/admin/finanzen/categories" class="card">
+  <p class="muted">Regeln: Wörter im Empfängernamen (Komma-getrennt), <code>zweck:…</code> für den Verwendungszweck,
+  <code>iban:DE…</code> für ein Konto. Die längste passende Regel gewinnt; von Hand gesetzte Kategorien haben Vorrang.
+  <b>Budget</b> = variable Ausgaben mit Monatsbudget; <b>Fixkosten/Einnahmen</b> = regelmäßig, fließen in die Vorschau ein.</p>
+  <div class="scroll"><table>
+    <tr><th>Name</th><th>Art</th><th class="r">Budget €/Monat</th><th>Regeln</th><th>löschen</th></tr>
+    {% for c in d.cats %}<tr>
+      <td><span class="dot" style="background:{{ c.color }}"></span> <input type="text" name="name_{{ c.id }}" value="{{ c.name }}" style="min-width:150px"></td>
+      <td><select name="kind_{{ c.id }}">{% for k, v in kinds.items() %}<option value="{{ k }}" {% if c.kind == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></td>
+      <td><input type="text" name="budget_{{ c.id }}" inputmode="decimal" value="{{ c.budget|num(2) if c.budget else '' }}" style="width:100px"></td>
+      <td><textarea name="rules_{{ c.id }}" rows="2" style="min-width:280px;font-size:12px">{{ c.rules }}</textarea></td>
+      <td><input type="checkbox" name="delete_{{ c.id }}" aria-label="löschen"></td></tr>{% endfor %}
+    <tr><td><input type="text" name="new_name" placeholder="+ neue Kategorie"></td>
+      <td><select name="new_kind">{% for k, v in kinds.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></td>
+      <td><input type="text" name="new_budget" inputmode="decimal" style="width:100px"></td>
+      <td><textarea name="new_rules" rows="2" style="min-width:280px;font-size:12px" placeholder="z. B. REWE, EDEKA"></textarea></td><td></td></tr>
+  </table></div>
+  <button>Kategorien speichern</button>
+</form>
+
+<h2 id="einstellungen">Kontoauszug &amp; Einstellungen</h2>
+<div class="card">
+  <form method="post" action="/admin/finanzen/import" enctype="multipart/form-data" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <input type="file" name="file" accept=".xml,.zip,.csv,application/xml,text/xml,text/csv,application/zip" required style="max-width:100%">
+    <button>Kontoauszug einlesen</button>
+  </form>
+  <p class="muted">Ein Upload genügt: Umsätze des Hauptkontos landen hier, Umsätze mit Bezug zum Rücklagenkonto zusätzlich im
+  Rücklagen-Abgleich. {{ d.count }} Umsätze gespeichert.</p>
+  <form method="post" action="/admin/finanzen/settings">
+    <div class="grid">
+      <div><label>Hauptkonto (IBAN)</label><input type="text" name="fin_iban" value="{{ fmt_iban(st.fin_iban) }}" placeholder="leer = Hauptkonto aus Rücklagen ({{ fmt_iban(d.iban) or '–' }})"></div>
+      <div><label>Zeitraum</label><select name="fin_period"><option value="monat">Kalendermonat</option>
+        <option value="gehalt" {% if st.fin_period == 'gehalt' %}selected{% endif %}>vom Gehaltseingang bis zum nächsten</option></select></div>
+      <div><label>Sicherheitspuffer (€)</label><input type="text" name="fin_buffer" inputmode="decimal" value="{{ st.fin_buffer }}"></div>
+    </div>
+    <button class="sec">Einstellungen speichern</button>
+  </form>
+</div>
+{% endblock %}

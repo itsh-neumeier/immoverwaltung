@@ -31,6 +31,7 @@
   <a href="/admin/parties">Parteien</a>
   <a href="/admin/costs">Fixkosten &amp; Umlagen</a>
   <a href="/admin/reserves">Rücklagen</a>
+  {% if not auth_on or (me and me.is_super) %}<a href="/admin/finanzen">Finanzen</a>{% endif %}
   <a href="/admin/buildings">Gebäude</a>
   <a href="/admin/messages">Mitteilungen</a>
   <a href="/admin/waste">Abfall</a>
