@@ -46,6 +46,11 @@ class Building(Base):
     reserve_start: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM: Rücklagen ab diesem Abrechnungsmonat
     sepa_format: Mapped[str] = mapped_column(String(20), default="pain.001.001.09")
     reserve_owner: Mapped[bool] = mapped_column(Boolean, default=True)  # Anteil des Eigentümers mit zurücklegen
+    # monatlicher Sammelauftrag per E-Mail (XML im Anhang)
+    sepa_mail: Mapped[bool] = mapped_column(Boolean, default=False)
+    sepa_mail_to: Mapped[str] = mapped_column(String(300), default="")
+    sepa_mail_day: Mapped[int] = mapped_column(Integer, default=25)  # am … des Vormonats
+    sepa_mail_last: Mapped[str] = mapped_column(String(7), default="")  # JJJJ-MM des zuletzt versandten Monats
     # Kontostände laut Bank (aus dem CAMT-Kontoauszug)
     bank_main_balance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     bank_main_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

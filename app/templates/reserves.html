@@ -30,7 +30,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
 <div class="warn">Konten unvollständig: {{ problems|join(' · ') }} – unten unter „Konten“ eintragen.</div>
 {% endif %}
 
-{% if problems %}<details class="card" {% if problems %}open{% endif %}>
+{% if problems %}<details class="card" id="konten" {% if problems %}open{% endif %}>
   <summary><b>🏦 Konten</b> <span class="muted">Hauptkonto {{ fmt_iban(bld.account_iban) or "–" }} → Rücklagenkonto {{ fmt_iban(bld.reserve_iban) or "–" }}</span></summary>
   <p class="muted">Kontoinhaber genau so eintragen, wie er bei der Bank geführt wird – die Bank prüft beim Hochladen, ob
   Name und IBAN zusammenpassen (Empfängerprüfung).</p>
@@ -54,7 +54,19 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <h3>Monatlicher Sammelauftrag per E-Mail</h3>
+    <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
+    <div class="grid">
+      <div><label>an (leer = Super-Admins)</label><input type="text" name="sepa_mail_to" value="{{ bld.sepa_mail_to }}" placeholder="name@beispiel.de"></div>
+      <div><label>Versand am … des Vormonats</label><input type="number" name="sepa_mail_day" min="1" max="28" value="{{ bld.sepa_mail_day or 25 }}"></div>
+    </div>
+    <p class="muted" style="margin:4px 0 0">Ausführungsdatum in der Datei: erster Bankarbeitstag des Monats. Je Monat genau eine Datei
+    {% if bld.sepa_mail_last %}– zuletzt versandt: {{ bld.sepa_mail_last[5:] }}/{{ bld.sepa_mail_last[:4] }}{% endif %}.</p>
     <button>Konten speichern</button>
+  </form>
+  <form method="post" action="/admin/reserves/monthly/send" style="margin-top:8px" onsubmit="return confirm('Sammelauftrag für den kommenden Monat jetzt erzeugen und per E-Mail senden?')">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <button class="sec">📧 Sammelauftrag für den kommenden Monat jetzt senden</button>
   </form>
 </details>{% endif %}
 <h2>Rücklagenkonto</h2>
@@ -370,7 +382,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       {% if not e.export_id and not e.bank_line_id %}<form method="post" action="/admin/reserves/entry/{{ e.id }}/delete" style="display:inline" onsubmit="return confirm('Buchung löschen?')"><button class="sec">Löschen</button></form>{% endif %}</td></tr>
   {% else %}<tr><td colspan="7" class="muted">Noch keine Buchungen.</td></tr>{% endfor %}
 </table></div>
-{% if not problems %}<details class="card" {% if problems %}open{% endif %}>
+{% if not problems %}<details class="card" id="konten" {% if problems %}open{% endif %}>
   <summary><b>🏦 Konten</b> <span class="muted">Hauptkonto {{ fmt_iban(bld.account_iban) or "–" }} → Rücklagenkonto {{ fmt_iban(bld.reserve_iban) or "–" }}</span></summary>
   <p class="muted">Kontoinhaber genau so eintragen, wie er bei der Bank geführt wird – die Bank prüft beim Hochladen, ob
   Name und IBAN zusammenpassen (Empfängerprüfung).</p>
@@ -394,7 +406,19 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Format</label><select name="sepa_format">{% for k, v in formats.items() %}<option value="{{ k }}" {% if k == bld.sepa_format %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></div>
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
+    <h3>Monatlicher Sammelauftrag per E-Mail</h3>
+    <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
+    <div class="grid">
+      <div><label>an (leer = Super-Admins)</label><input type="text" name="sepa_mail_to" value="{{ bld.sepa_mail_to }}" placeholder="name@beispiel.de"></div>
+      <div><label>Versand am … des Vormonats</label><input type="number" name="sepa_mail_day" min="1" max="28" value="{{ bld.sepa_mail_day or 25 }}"></div>
+    </div>
+    <p class="muted" style="margin:4px 0 0">Ausführungsdatum in der Datei: erster Bankarbeitstag des Monats. Je Monat genau eine Datei
+    {% if bld.sepa_mail_last %}– zuletzt versandt: {{ bld.sepa_mail_last[5:] }}/{{ bld.sepa_mail_last[:4] }}{% endif %}.</p>
     <button>Konten speichern</button>
+  </form>
+  <form method="post" action="/admin/reserves/monthly/send" style="margin-top:8px" onsubmit="return confirm('Sammelauftrag für den kommenden Monat jetzt erzeugen und per E-Mail senden?')">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <button class="sec">📧 Sammelauftrag für den kommenden Monat jetzt senden</button>
   </form>
 </details>{% endif %}
 <script>

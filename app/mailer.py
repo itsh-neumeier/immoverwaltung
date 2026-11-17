@@ -52,8 +52,9 @@ def send_mail(to: list[str], subject: str, body: str, attachments: list[tuple[st
         if use_logo:
             msg.get_payload()[1].add_related(LOGO.read_bytes(), maintype="image", subtype="png", cid=cid,
                                              filename="logo.png", disposition="inline")
-    for name, data in attachments:
-        msg.add_attachment(data, maintype="application", subtype="pdf", filename=name)
+    for name, data, *mime in attachments:  # (Name, Daten[, "typ/subtyp"]) – Standard PDF
+        maintype, subtype = (mime[0] if mime else "application/pdf").split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
 
     recipients = to + (bcc or [])
     ctx = ssl.create_default_context()

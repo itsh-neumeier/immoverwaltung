@@ -369,6 +369,10 @@ async def save_accounts(request: Request, s: Session = Depends(get_session)):
     start = str(form.get("reserve_start", "")).strip()
     bld.reserve_start = start if re.fullmatch(r"\d{4}-\d{2}", start) else ""
     bld.reserve_owner = bool(form.get("reserve_owner"))
+    bld.sepa_mail = bool(form.get("sepa_mail"))
+    bld.sepa_mail_to = ", ".join(a.strip() for a in re.split(r"[,;\s]+", str(form.get("sepa_mail_to", ""))) if "@" in a)[:300]
+    day = str(form.get("sepa_mail_day", "25")).strip()
+    bld.sepa_mail_day = min(max(int(day), 1), 28) if day.isdigit() else 25
     fmt = str(form.get("sepa_format", ""))
     bld.sepa_format = fmt if fmt in sepa.FORMATS else "pain.001.001.09"
     s.commit()
@@ -376,12 +380,12 @@ async def save_accounts(request: Request, s: Session = Depends(get_session)):
     return _redirect(f"/admin/reserves?building={bld.id}", msg)
 
 
-def _store_export(s: Session, request: Request, bld: Building, kind: str, xml: bytes, msg_id: str,
-                  exec_date: date, count: int, total: float) -> SepaExport:
+def _store_export(s: Session, request: Optional[Request], bld: Building, kind: str, xml: bytes, msg_id: str,
+                  exec_date: date, count: int, total: float, created_by: str = "") -> SepaExport:
     code = re.sub(r"[^A-Za-z0-9]+", "", gid(bld.code)) or str(bld.id)
-    me = current(request)
+    me = current(request) if request is not None else None
     ex = SepaExport(building_id=bld.id, kind=kind, msg_id=msg_id, exec_date=exec_date, count=count,
-                    total=round(total, 2), xml=xml.decode("utf-8"), created_by=me.display if me else "")
+                    total=round(total, 2), xml=xml.decode("utf-8"), created_by=me.display if me else created_by)
     s.add(ex)
     s.flush()
     stem = ("Ruecklage" if kind == "in" else "Ruecklage-Entnahme") + f"_GID{code}_{exec_date:%Y-%m-%d}_{ex.id}"
@@ -396,6 +400,22 @@ def _date(value, fallback: date) -> date:
         return fallback
 
 
+def create_in_export(s: Session, request: Optional[Request], bld: Building, items: list[Item], exec_date: date,
+                     created_by: str = "") -> SepaExport:
+    """Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) erzeugen und die Zuführungen vormerken."""
+    debtor, creditor = accounts(bld)
+    msg_id, xml = sepa.credit_transfer(debtor, creditor, [sepa.Transfer(i.amount, i.purpose, i.end_to_end) for i in items],
+                                       exec_date, bld.sepa_format or "pain.001.001.09")
+    ex = _store_export(s, request, bld, "in", xml, msg_id, exec_date, len(items), sum(i.amount for i in items),
+                       created_by)
+    for i in items:
+        s.add(ReserveEntry(building_id=bld.id, ref=i.pos.ref, name=i.pos.name, booking_date=exec_date, amount=i.amount,
+                           kind="in", billing_id=i.billing.id if i.billing else None,
+                           party_id=i.party["id"] if i.party else None, period=f"{i.month:%Y-%m}" if i.month else "",
+                           export_id=ex.id, note=i.purpose, e2e=i.end_to_end))
+    return ex
+
+
 @router.post("/admin/reserves/export")
 async def export(request: Request, s: Session = Depends(get_session)):
     form = await request.form()
@@ -405,19 +425,10 @@ async def export(request: Request, s: Session = Depends(get_session)):
     if not items:
         return _redirect(f"/admin/reserves?building={bld.id}", "Bitte mindestens einen Posten auswählen.")
     exec_date = _date(form.get("exec_date"), default_exec_date(items))
-    debtor, creditor = accounts(bld)
     try:
-        msg_id, xml = sepa.credit_transfer(
-            debtor, creditor, [sepa.Transfer(i.amount, i.purpose, i.end_to_end)
-                               for i in items], exec_date, bld.sepa_format or "pain.001.001.09")
+        ex = create_in_export(s, request, bld, items, exec_date)
     except sepa.SepaError as e:
         return _redirect(f"/admin/reserves?building={bld.id}", f"SEPA-Datei nicht erzeugt: {e}")
-    ex = _store_export(s, request, bld, "in", xml, msg_id, exec_date, len(items), sum(i.amount for i in items))
-    for i in items:
-        s.add(ReserveEntry(building_id=bld.id, ref=i.pos.ref, name=i.pos.name, booking_date=exec_date, amount=i.amount,
-                           kind="in", billing_id=i.billing.id if i.billing else None,
-                           party_id=i.party["id"] if i.party else None, period=f"{i.month:%Y-%m}" if i.month else "",
-                           export_id=ex.id, note=i.purpose, e2e=i.end_to_end))
     s.commit()
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}",
                      f"SEPA-Datei erzeugt: {len(items)} Überweisung(en), {_de(ex.total)} € – jetzt im Online-Banking "
@@ -1219,3 +1230,120 @@ async def bank_repair_mirrors(request: Request, s: Session = Depends(get_session
     n = repair_mirrors(s, bld)
     s.commit()
     return _redirect(f"/admin/reserves?building={bld.id}#abgleich", f"Gegenbuchungen neu zugeordnet: {n} Paarung(en) geändert")
+
+
+# --------------------------------------------------------------------------- monatlicher Sammelauftrag per E-Mail
+def first_business_day(d: date) -> date:
+    while not sepa.is_business_day(d):
+        d = date.fromordinal(d.toordinal() + 1)
+    return d
+
+
+def _mail_recipients(s: Session, bld: Building) -> list[str]:
+    from .db import User
+
+    if bld.sepa_mail_to.strip():
+        return [a.strip() for a in bld.sepa_mail_to.split(",") if a.strip()]
+    return [u.email for u in s.query(User).filter(User.role == "superadmin", User.active.is_(True)) if u.email]
+
+
+def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: bool = False) -> Optional[str]:
+    """Sammelauftrag für den Folgemonat: ab dem eingestellten Tag im Vormonat (Standard 25.) einmal je Monat.
+    Enthält alle Töpfe (Monatsbetrag) und offene Nebenkosten-Rücklagen; Ausführung am ersten Bankarbeitstag.
+    Liefert eine Rückmeldung oder None (noch nicht fällig / schon versandt)."""
+    from . import mailer, notify
+
+    today = today or date.today()
+    target = _add_months(today.replace(day=1), 1)
+    ym = f"{target:%Y-%m}"
+    if not force and (not bld.sepa_mail or today.day < (bld.sepa_mail_day or 25) or bld.sepa_mail_last == ym):
+        return None
+    to = _mail_recipients(s, bld)
+    if not to:
+        raise sepa.SepaError("Keine E-Mail-Adresse für den Versand (beim Gebäude oder beim Super-Admin hinterlegen).")
+    existing = None
+    if bld.sepa_mail_last == ym:  # erneut senden: dieselbe Datei, keine zweite
+        existing = s.query(SepaExport).filter(SepaExport.building_id == bld.id, SepaExport.kind == "in",
+                                              SepaExport.created_by == f"Monatslauf {ym}").order_by(SepaExport.id.desc()).first()
+    if existing is None:
+        items = billing_pending(s, bld) + plan_pending(s, bld, today=target)
+        if not items:
+            bld.sepa_mail_last = ym
+            s.commit()
+            return f"{target:%m/%Y}: keine Zuführungen fällig – nichts versandt."
+        ex = create_in_export(s, None, bld, items, first_business_day(target), created_by=f"Monatslauf {ym}")
+        lines = [(i.pos.name + (f" – {i.party['name']}" if i.party else ""), i.amount) for i in items]
+    else:
+        ex = existing
+        lines = [(e.name, e.amount) for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id)]
+    refunds = [r for r in open_refunds(s, bld) if not r["probable"] and r["amount"] >= 0.01]
+    base = config_base()
+    facts = [("Monat", f"{target:%m/%Y}", True), ("Ausführung", f"{ex.exec_date:%d.%m.%Y}", True),
+             ("Überweisungen", str(ex.count), False), ("Summe", f"{_de(ex.total)} €", True),
+             ("Datei", ex.filename, False)]
+    paragraphs = ["anbei der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für den kommenden Monat.",
+                  "Im Online-Banking des Hauptkontos unter „Datei-Übergabe“ hochladen, Summe und Ausführungsdatum prüfen "
+                  "und freigeben. Nach der Ausführung in der App bestätigen – oder einfach den nächsten Kontoauszug "
+                  "einlesen, dann wird die Datei automatisch als ausgeführt erkannt.",
+                  "Aufstellung: " + "; ".join(f"{n} {_de(a)} €" for n, a in lines)]
+    if refunds:
+        paragraphs.append(f"Außerdem sind {len(refunds)} Gutschrift(en) über {_de(sum(r['amount'] for r in refunds))} € "
+                          "aus der Rücklage aufs Hauptkonto offen – unter „Rücklagen → Offene Gutschriften“ prüfen und "
+                          "den Sammelauftrag Gutschriften erzeugen.")
+    html = mailer.render_html(title=f"Sammelauftrag Rücklagen {target:%m/%Y}", preheader=f"{_de(ex.total)} € am "
+                              f"{ex.exec_date:%d.%m.%Y}", facts=facts, paragraphs=["Hallo,"] + paragraphs,
+                              closing="Viele Grüße\nImmoVerwaltung",
+                              button_url=f"{base}/admin/reserves?building={bld.id}" if base else "",
+                              button_label="Zu den Rücklagen", footer=bld.label)
+    text = "Hallo,\n\n" + "\n\n".join(paragraphs) + "\n\n" + "\n".join(f"{k}: {v}" for k, v, _ in facts)
+    mailer.send_mail(to, f"SEPA-Sammelauftrag Rücklagen {target:%m/%Y}: {_de(ex.total)} € ({bld.label})", text,
+                     [(ex.filename, ex.xml.encode("utf-8"), "application/xml")], html=html)
+    bld.sepa_mail_last = ym
+    s.commit()
+    try:
+        notify.to_admins(s, "push_admin_sent", f"Sammelauftrag Rücklagen {target:%m/%Y}",
+                         f"{_de(ex.total)} € · {ex.count} Überweisungen · per E-Mail an {', '.join(to)}",
+                         url=f"/admin/reserves?building={bld.id}", tag=f"sepa-{ym}")
+    except Exception:  # noqa: BLE001
+        pass
+    return f"Sammelauftrag {target:%m/%Y} ({_de(ex.total)} €, {ex.count} Überweisungen) per E-Mail an {', '.join(to)} gesendet."
+
+
+def config_base() -> str:
+    from .config import config
+
+    return (config.app_base_url or "").rstrip("/")
+
+
+def monthly_tick(s: Session, today: Optional[date] = None) -> list[str]:
+    """Aus der Hintergrundschleife: für alle Gebäude mit aktivem Versand prüfen."""
+    from . import notify
+
+    out = []
+    for bld in s.query(Building).filter(Building.sepa_mail.is_(True)):
+        try:
+            if (m := monthly_run(s, bld, today)):
+                out.append(m)
+        except Exception as e:  # noqa: BLE001
+            s.rollback()
+            try:
+                notify.to_admins(s, "push_admin_errors", "Sammelauftrag Rücklagen fehlgeschlagen", str(e)[:200],
+                                 url="/admin/reserves", tag="sepa-error")
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
+@router.post("/admin/reserves/monthly/send")
+async def monthly_send(request: Request, s: Session = Depends(get_session)):
+    """Sammelauftrag für den Folgemonat sofort erzeugen und senden (bzw. erneut senden)."""
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = f"/admin/reserves?building={bld.id}#konten"
+    try:
+        msg = monthly_run(s, bld, force=True)
+    except Exception as e:  # noqa: BLE001
+        s.rollback()
+        from . import mailer
+        return _redirect(back, f"Nicht gesendet: {mailer.explain(e) if not isinstance(e, sepa.SepaError) else e}")
+    return _redirect(back, msg or "Nichts zu tun.")

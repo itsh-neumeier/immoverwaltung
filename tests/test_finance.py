@@ -180,3 +180,74 @@ def test_protected_manual_pot_is_never_touched():
             assert not reserves.plan_pending(s, bld, today=date(2026, 12, 3))  # keine Zuführung
             assert not reserves.open_refunds(s, bld)  # keine Gutschrift
         assert "🔒 Manuell" in c.get("/admin/reserves").text
+
+
+def test_monthly_collective_order_mail(monkeypatch):
+    import smtplib
+    import xml.etree.ElementTree as ET
+
+    from app import reserves
+    from app.db import ReservePlan, SepaExport
+    from tests.test_reserves import NS
+
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def starttls(self, **kw):
+            pass
+
+        def login(self, *a):
+            pass
+
+        def send_message(self, msg, to_addrs=None):
+            sent.append((msg, to_addrs))
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.code = b.id, "GID-01"
+            b.account_name = b.reserve_name = "Timo Muster"
+            b.account_iban, b.reserve_iban = GIRO, RESERVE
+            s.add(ReservePlan(building_id=bid, name="Immobilie · Grundsteuer", label="GRUNDSTEUER", annual_amount=600,
+                              interval=1, start="2026-12", funding="sepa", category="immobilie", active=True))
+            s.add(ReservePlan(building_id=bid, name="Fahrzeug · HU-AU FUER BA-AT9314 (Corsa)", label="HU-AU FUER BA-AT9314",
+                              annual_amount=84, interval=1, start="2026-12", funding="sepa", category="privat", active=True))
+            s.add(ReservePlan(building_id=bid, name="Privat · Urlaub", label="URLAUB", funding="manuell", active=True,
+                              start="2026-11"))
+            s.commit()
+        c.post("/admin/reserves/accounts", data={"building": bid, "account_name": "Timo Muster", "account_iban": GIRO,
+                                                 "reserve_name": "Timo Muster", "reserve_iban": RESERVE,
+                                                 "sepa_format": "pain.001.001.09", "reserve_owner": "1", "sepa_mail": "1",
+                                                 "sepa_mail_to": "timo@example.test", "sepa_mail_day": "25"})
+        with SessionLocal() as s:
+            assert reserves.monthly_tick(s, date(2026, 11, 24)) == []  # vor dem 25.
+            out = reserves.monthly_tick(s, date(2026, 11, 25))
+            assert out and "Sammelauftrag 12/2026 (57,00 €, 2 Überweisungen)" in out[0]
+            assert reserves.monthly_tick(s, date(2026, 11, 28)) == []  # nur einmal je Monat
+        msg, to = sent[0]
+        assert to == ["timo@example.test"] and "SEPA-Sammelauftrag Rücklagen 12/2026: 57,00 €" in msg["Subject"]
+        att = [p for p in msg.iter_attachments()][0]
+        assert att.get_content_type() == "application/xml" and att.get_filename().endswith(".xml")
+        doc = ET.fromstring(att.get_payload(decode=True))
+        assert doc.find(".//p:ReqdExctnDt/p:Dt", NS).text == "2026-12-01"  # erster Bankarbeitstag
+        texts = sorted(u.text for u in doc.findall(".//p:Ustrd", NS))
+        assert texts == ["RUECKLAGE GRUNDSTEUER 12/2026 GID: 01 50,00 EUR", "RUECKLAGE HU-AU FUER BA-AT9314 12/2026 7,00 EUR"]
+        # erneut senden (Knopf) → dieselbe Datei, keine zweite
+        with SessionLocal() as s:
+            assert "per E-Mail" in reserves.monthly_run(s, s.get(Building, bid), today=date(2026, 11, 26), force=True)
+            assert s.query(SepaExport).count() == 1
+        assert len(sent) == 2
+        # Dezember: Zuführungen sind vorgemerkt, nicht mehr offen
+        with SessionLocal() as s:
+            assert not reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))

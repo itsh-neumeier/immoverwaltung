@@ -37,6 +37,8 @@ async def reminder_loop() -> None:
                 await asyncio.to_thread(notify.send_reminders, s)
             with SessionLocal() as s:
                 await asyncio.to_thread(notify.waste_tick, s)
+            with SessionLocal() as s:
+                await asyncio.to_thread(reserves.monthly_tick, s)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(4 * 60)
