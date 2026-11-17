@@ -5,10 +5,10 @@
 *{box-sizing:border-box}
 body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
 header{background:var(--card);border-bottom:1px solid var(--line)}
-header nav{max-width:1100px;margin:auto;padding:12px 16px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+header nav{max-width:1560px;margin:auto;padding:12px 16px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 header nav a{color:var(--fg);text-decoration:none}
 header nav a.brand{font-weight:700;margin-right:auto}
-main{max-width:1100px;margin:auto;padding:20px 16px 60px}
+main{max-width:1560px;margin:auto;padding:20px 16px 60px}
 h1{font-size:1.5rem;margin:.2em 0 .8em}h2{font-size:1.15rem;margin:1.6em 0 .6em}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px}
 table{width:100%;border-collapse:collapse}
@@ -234,3 +234,13 @@ header.area-home{border-top:3px solid #16a34a}
 .budget-limit label{margin:0;font-size:12px;color:var(--muted)}
 .budget-limit input{width:110px;margin:0;padding:4px 8px}
 .budget-limit button{margin:0;padding:4px 10px}
+/* breite Bildschirme: etwas mehr Rand, Fließtext lesbar halten */
+@media (min-width:1200px){
+  header nav{padding-left:28px;padding-right:28px}
+  main{padding-left:28px;padding-right:28px}
+  main > p.muted{max-width:1100px}
+}
+/* mitlaufende Tabellenköpfe: bleiben beim Scrollen unter der Navigationsleiste stehen (Desktop) */
+:root{--head-h:0px}
+th{position:sticky;top:var(--head-h);z-index:5;background:var(--card);box-shadow:inset 0 -1px 0 var(--line)}
+@media (min-width:1200px){.scroll{overflow:visible}}

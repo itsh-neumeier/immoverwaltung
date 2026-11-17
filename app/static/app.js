@@ -52,6 +52,12 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     if (standalone) document.documentElement.classList.add("standalone");
+    // Höhe der (fixierten) Kopfzeile für mitlaufende Tabellenköpfe
+    const header = document.querySelector("header");
+    const setHead = () => header && document.documentElement.style.setProperty("--head-h", header.offsetHeight + "px");
+    setHead();
+    window.addEventListener("resize", setHead);
+    if (header && window.ResizeObserver) new ResizeObserver(setHead).observe(header);
     // Handy: Gruppe der aktuellen Seite im Menü aufgeklappt
     if (window.matchMedia("(max-width: 860px)").matches) {
       document.querySelectorAll(".nav-group.active").forEach((g) => g.setAttribute("open", ""));
