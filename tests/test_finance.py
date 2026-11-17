@@ -87,3 +87,69 @@ def test_finance_only_for_super_admin():
         c.post("/login", data={"username": "verw", "password": "verwalter-1"})
         assert c.get("/admin/finanzen", follow_redirects=False).status_code == 303
         assert ">Finanzen<" not in c.get("/admin").text
+
+
+def test_refunds_cut_and_monthly_collective_orders():
+    import xml.etree.ElementTree as ET
+    from app import reserves
+    from app.db import ReserveEntry, ReservePlan, SepaExport
+    from tests.test_reserves import NS
+
+    main = [tx("2026-10-01", -50.0, "Timo Muster", "RUECKBILDUNG GRUNDSTEUER MUSTERSTR ZYKLUS P.Q.", other=RESERVE),
+            tx("2026-08-17", -147.99, "MARKT HIRSCHAID", "GRUNDSTEUER FINANZADRESSE 19379 - 1"),
+            tx("2026-11-16", -147.99, "MARKT HIRSCHAID", "GRUNDSTEUER FINANZADRESSE 19379 - 1"),
+            tx("2026-11-20", -12.00, "MARKT HIRSCHAID", "Debitk. Wertstoffhof")]
+    res = [tx("2026-08-17", -147.00, "Timo Muster", "GUTSCHRIFT GRUNDSTEUER RUECKBILDUNG", other=GIRO)]
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.code = b.id, "GID-134"
+            b.account_name = b.reserve_name = "Timo Muster"
+            b.account_iban, b.reserve_iban = GIRO, RESERVE
+            s.add(ReservePlan(building_id=bid, name="Grundsteuer", label="GRUNDSTEUER", annual_amount=591.96,
+                              interval=1, start="2026-01", funding="dauerauftrag", standing_order=50, active=True))
+            s.commit()
+        c.post("/admin/finanzen/import", files={"file": ("h.xml", camt(GIRO, main, None, ("2026-11-20", 500.0)), "application/xml")})
+        c.post("/admin/reserves/bank/import", data={"building": bid},
+               files={"file": ("r.xml", camt(RESERVE, res, None, ("2026-11-20", 900.0)), "application/xml")})
+        c.post("/admin/reserves/bank/confirm-sure", data={"building": bid})  # Auszahlung 147,00 → Topf Grundsteuer
+        with SessionLocal() as s:
+            pid = s.query(ReservePlan).one().id
+        # Rechnung kommt von … eintragen
+        c.post("/admin/reserves/plan", data={"building": bid, "id": pid, "name": "Grundsteuer", "label": "GRUNDSTEUER",
+                                             "annual_amount": "591,96", "interval": "1", "start": "2026-01",
+                                             "category": "immobilie", "funding": "dauerauftrag", "standing_order": "50",
+                                             "payee_rules": "MARKT HIRSCHAID & zweck:GRUNDSTEUER", "active": "1"})
+        with SessionLocal() as s:
+            rows = reserves.open_refunds(s, s.get(Building, bid))
+            assert [(r["amount"], r["bill"], bool(r["probable"])) for r in rows] == [(0.0, 147.99, True), (147.99, 147.99, False)]
+            open_bill = rows[1]["txn"].id
+            assert rows[1]["purpose"] == ("GUTSCHRIFT RUECKLAGE GRUNDSTEUER GID: 134 RECHNUNG MARKT HIRSCHAID "
+                                          "16.11.2026 147,99 EUR")
+            done_bill = rows[0]["txn"].id
+        page = c.get("/admin/reserves").text
+        assert "Offene Gutschriften" in page and "vermutlich erstattet am 17.08.2026" in page and "Wertstoffhof" not in page
+        c.post(f"/admin/reserves/refunds/{done_bill}", data={"building": bid, "action": "done"})
+        r = c.post("/admin/reserves/refunds/export", data={"building": bid, "bills": [open_bill]})
+        assert "Sammelauftrag Gutschriften erzeugt: 1 Überweisung(en), 147,99 €" in r.text
+        ex_id = int(re.search(r"dl=(\d+)", str(r.url)).group(1))
+        doc = ET.fromstring(c.get(f"/admin/reserves/export/{ex_id}.xml").content)
+        assert doc.find(".//p:DbtrAcct//p:IBAN", NS).text == RESERVE and doc.find(".//p:CdtrAcct//p:IBAN", NS).text == GIRO
+        assert doc.find(".//p:EndToEndId", NS).text == f"RG{open_bill}"
+        with SessionLocal() as s:
+            assert not reserves.open_refunds(s, s.get(Building, bid))
+            e = s.query(ReserveEntry).filter(ReserveEntry.export_id == ex_id).one()
+            assert e.amount == -147.99 and e.fin_txn_id == open_bill
+        # Datei verwerfen → Rechnung wieder offen
+        c.post(f"/admin/reserves/export/{ex_id}/delete")
+        with SessionLocal() as s:
+            assert [r["txn"].id for r in reserves.open_refunds(s, s.get(Building, bid))] == [open_bill]
+        # Cut: Daueraufträge → monatlicher Sammelauftrag ab 12/2026
+        assert "1 Töpfe ab 12/2026 auf monatlichen Sammelauftrag umgestellt" in c.post(
+            "/admin/reserves/plans/cut", data={"building": bid, "month": "2026-12"}).text
+        with SessionLocal() as s:
+            p = s.get(ReservePlan, pid)
+            assert (p.funding, p.start, p.standing_order, p.rate) == ("sepa", "2026-12", 0.0, 49.33)
+            items = reserves.plan_pending(s, s.get(Building, bid), today=date(2026, 12, 3))
+            assert [i.purpose for i in items] == ["RUECKLAGE GRUNDSTEUER 12/2026 GID: 134 49,33 EUR"]

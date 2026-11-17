@@ -85,7 +85,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   </table></div>
 </div>
 
-<h2>Offene Rücklagen</h2>
+<h2>Monatlicher Sammelauftrag Rücklagen (Zuführungen)</h2>
 <form method="post" action="/admin/reserves/export" class="card">
   <input type="hidden" name="building" value="{{ bld.id }}">
   {% if items %}
@@ -144,7 +144,16 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     <tr><td colspan="3"><b>Summe (aktive Töpfe)</b></td><td class="r"><b>{{ ssum|eur }}</b></td><td class="r"><b>{{ dsum|eur }}</b></td><td colspan="4"></td></tr>
   </table></div>
   {% endif %}
-
+  {% if plan_rows|selectattr('plan.funding', 'equalto', 'dauerauftrag')|selectattr('plan.active')|list %}
+  <form method="post" action="/admin/reserves/plans/cut" class="cut-box" onsubmit="return confirm('Alle Dauerauftrags-Töpfe auf monatlichen Sammelauftrag umstellen? Danach die Daueraufträge bei der Bank löschen.')">
+    <input type="hidden" name="building" value="{{ bld.id }}">
+    <b>Umstellung: Daueraufträge → monatlicher Sammelauftrag</b>
+    <span class="muted">Ab dem gewählten Monat erzeugt die App jeden Monat eine SEPA-Datei mit allen Zuführungen (Soll = Jahresbetrag / 12).</span>
+    <label style="margin:0">ab <input type="month" name="month" value="{{ next_month }}" style="width:auto;display:inline-block"></label>
+    <button>Umstellen</button>
+  </form>
+  {% endif %}
+  {% set ep = edit_plan %}
   <details {% if ep or not plans %}open{% endif %} style="margin-top:8px"><summary><b>{{ 'Bearbeiten: ' ~ ep.name if ep else '+ Topf anlegen' }}</b></summary>
   <form method="post" action="/admin/reserves/plan" style="margin-top:8px">
     <input type="hidden" name="building" value="{{ bld.id }}"><input type="hidden" name="id" value="{{ ep.id if ep else 0 }}">
@@ -158,6 +167,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <div><label>Bereich</label><select name="category"><option value="immobilie">Immobilie (mit GID im Zweck)</option><option value="privat" {% if ep and ep.category == 'privat' %}selected{% endif %}>Privat / Sonstiges</option></select></div>
       <div><label>Weg</label><select name="funding"><option value="sepa">SEPA-Datei aus der App</option><option value="dauerauftrag" {% if ep and ep.funding == 'dauerauftrag' %}selected{% endif %}>Dauerauftrag der Bank</option></select></div>
       <div><label>Dauerauftrag aktuell (€/Monat)</label><input type="text" name="standing_order" inputmode="decimal" value="{{ ep.standing_order|num(2) if ep and ep.standing_order else '' }}" placeholder="50,00"></div>
+      <div><label>Rechnung kommt von (Hauptkonto)</label><input type="text" name="payee_rules" maxlength="400" value="{{ ep.payee_rules if ep else '' }}" placeholder="z. B. MARKT HIRSCHAID &amp; zweck:GRUNDSTEUER  (Komma = oder, &amp; = und)"></div>
       <div><label>Stichworte im Kontoauszug</label><input type="text" name="keywords" maxlength="200" value="{{ ep.keywords if ep else '' }}" placeholder="leer = aus Name/Zweck; Varianten mit Komma: KFZ STEUER OPEL, INSIGNIA STEUER"></div>
     </div>
     {% if ep %}<div class="check"><input type="checkbox" name="active" id="rp-act" {% if ep.active %}checked{% endif %}><label for="rp-act" style="margin:0">aktiv</label></div>{% endif %}
@@ -173,8 +183,41 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
 
 
 
+{% if refunds or is_super %}
+<h2 id="gutschriften">Offene Gutschriften – Rechnungen vom Hauptkonto</h2>
+<form method="post" action="/admin/reserves/refunds/export" class="card">
+  <input type="hidden" name="building" value="{{ bld.id }}">
+  <p class="muted">Rechnungen, die vom <b>Hauptkonto</b> bezahlt wurden und zu einem Topf gehören („Rechnung kommt von“ beim
+  Topf bzw. bei der Fixkosten-/Umlage-Position). Ausgewählte werden als <b>Sammelauftrag Gutschriften</b> (Rücklagenkonto →
+  Hauptkonto) erzeugt. „Vermutlich erstattet“ = es gab um diese Zeit schon eine Auszahlung aus dem Topf – nicht vorausgewählt.</p>
+  {% if refunds %}
+  <div class="scroll"><table>
+    <tr><th><input type="checkbox" aria-label="alle" onclick="this.form.querySelectorAll('input[name=bills]').forEach(c => c.checked = this.checked)"></th>
+      <th>Datum</th><th>Rechnung von</th><th>Topf</th><th class="r">Betrag</th><th>Hinweis</th><th></th></tr>
+    {% for r in refunds %}<tr{% if r.probable %} class="muted"{% endif %}>
+      <td><input type="checkbox" name="bills" value="{{ r.txn.id }}" {% if not r.probable %}checked{% endif %}></td>
+      <td>{{ r.txn.booking_date.strftime('%d.%m.%Y') if r.txn.booking_date else '' }}</td>
+      <td>{{ r.txn.name[:40] }}<br><span class="muted" style="font-size:12px">{{ r.txn.purpose[:70] }}</span></td>
+      <td>{{ r.pos.name }}</td><td class="r">{{ r.amount|eur }}{% if r.covered %}<br><span class="muted" style="font-size:12px">Rechnung {{ r.bill|eur }}</span>{% endif %}</td>
+      <td style="font-size:12px">{% if r.probable %}vermutlich erstattet am {{ r.probable.booking_date.strftime('%d.%m.%Y') if r.probable.booking_date }} ({{ r.covered|eur }})
+        {% elif r.partial %}teilweise erstattet ({{ r.covered|eur }} am {{ r.partial.booking_date.strftime('%d.%m.%Y') if r.partial.booking_date }}) – Rest offen{% endif %}</td>
+      <td style="white-space:nowrap">
+        <button class="sec" formaction="/admin/reserves/refunds/{{ r.txn.id }}" name="action" value="done" title="ist bereits erstattet">✓ erstattet</button>
+        <button class="sec" formaction="/admin/reserves/refunds/{{ r.txn.id }}" name="action" value="skip" title="soll nicht aus der Rücklage erstattet werden">nicht erstatten</button></td>
+    </tr>{% endfor %}
+  </table></div>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Ausführungsdatum</label><input type="date" name="exec_date" value="{{ exec_date.isoformat() }}" min="{{ today.isoformat() }}"></div>
+    <div><label>offen (ohne „vermutlich erstattet“)</label><div style="font-size:1.4rem;font-weight:700">{{ refunds_total|eur }}</div></div>
+  </div>
+  <button {% if problems %}disabled{% endif %}>📄 Sammelauftrag Gutschriften erzeugen</button>
+  {% else %}<p class="muted">Keine offenen Rechnungen. Beim Topf „Rechnung kommt von“ eintragen (z. B. <code>MARKT HIRSCHAID &amp; zweck:GRUNDSTEUER</code>)
+  und den Kontoauszug des Hauptkontos unter <a href="/admin/finanzen">Finanzen</a> einlesen.</p>{% endif %}
+</form>
+{% endif %}
+
 <div class="card" id="auszahlung">
-  <h2 style="margin-top:0">💶 Rechnung fällig – Auszahlung aufs Hauptkonto</h2>
+  <h2 style="margin-top:0">💶 Einzelne Gutschrift aufs Hauptkonto</h2>
   <p class="muted">Z. B. Wasserabrechnung ist da: Position wählen, Betrag eintragen → SEPA-Gutschrift vom Rücklagenkonto aufs
   Hauptkonto. Nach Ausführung im Online-Banking unten bestätigen.</p>
   <form method="post" action="/admin/reserves/entry">

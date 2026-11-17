@@ -238,6 +238,21 @@ den aktuellen Dauerauftrag, das Ist der letzten 12 Monate, die Ausgaben und den 
 Soll ab, steht ein Hinweis dabei. Die **Kontostände** von Haupt- und Rücklagenkonto kommen aus dem CAMT-Auszug;
 „frei / nicht zugeordnet“ ist der Kontostand minus die Summe der Töpfe.
 
+**Monatlicher Sammelauftrag statt Daueraufträgen:** „Umstellen“ stellt alle Dauerauftrags-Töpfe ab einem Monat
+auf SEPA-Dateien um. Danach entstehen jeden Monat zwei Sammelaufträge:
+1. **Rücklagen (Zuführungen)**, vom Hauptkonto aufs Rücklagenkonto.
+   Beispiel: `RUECKLAGE GRUNDSTEUER 12/2026 GID: 134 49,33 EUR`.
+2. **Gutschriften**, vom Rücklagenkonto aufs Hauptkonto, für Rechnungen, die vom Hauptkonto bezahlt wurden.
+   Beispiel: `GUTSCHRIFT RUECKLAGE GRUNDSTEUER GID: 134 RECHNUNG MARKT HIRSCHAID 16.11.2026 147,99 EUR`.
+   Je Topf (bzw. Fixkosten-/Umlage-Position) legt „Rechnung kommt von“ fest, welche Abbuchungen des Hauptkontos dazu
+   gehören. Komma bedeutet „oder“, `&` bedeutet „und“, z. B. `MARKT HIRSCHAID & zweck:GRUNDSTEUER`.
+   - Frühere Auszahlungen aus dem Topf (±21 Tage) werden angerechnet. Rechnungen gelten dann als
+     „vermutlich erstattet“ bzw. „teilweise erstattet“.
+   - Einzelne Rechnungen lassen sich als „erstattet“ oder „nicht erstatten“ markieren.
+
+Jeder Verwendungszweck enthält den Zweck des Topfs (z. B. `GRUNDSTEUER`). So ordnet der Kontoabgleich
+die Umsätze wieder dem richtigen Topf zu. Alte Schreibweisen trägt man unter „Stichworte“ ein.
+
 **Kontoabgleich:** Im Online-Banking die Umsätze von Haupt- und Rücklagenkonto exportieren, als
 **XML (CAMT V8 – gebuchte Umsätze)**, auch als ZIP; CSV geht ebenfalls. Unter „Rücklagen → Kontoabgleich“ hochladen.
 - Das Konto wird an der IBAN erkannt. Vom Hauptkonto werden nur Umsätze mit Bezug zum Rücklagenkonto übernommen.

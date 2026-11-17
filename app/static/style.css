@@ -195,3 +195,4 @@ header.area-home{border-top:3px solid #16a34a}
 .budget-rest{margin-left:auto;font-weight:600}
 .bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:6px 0 4px}
 .bar span{display:block;height:100%;border-radius:4px}
+.cut-box{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;padding:10px;border:1px dashed var(--line);border-radius:8px}

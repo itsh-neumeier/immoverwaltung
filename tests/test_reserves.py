@@ -95,7 +95,7 @@ def test_reserve_flow_export_confirm_payout():
         doc = ET.fromstring(c.get(f"/admin/reserves/export/{out_id}.xml").content)
         assert doc.find(".//p:DbtrAcct//p:IBAN", NS).text == RESERVE
         assert doc.find(".//p:CdtrAcct//p:IBAN", NS).text == GIRO
-        assert doc.find(".//p:Ustrd", NS).text.startswith("AUSZAHLUNG RUECKLAGE GID: 134 WASSERGELD 30,34 EUR")
+        assert doc.find(".//p:Ustrd", NS).text.startswith("GUTSCHRIFT RUECKLAGE WASSERGELD GID: 134 30,34 EUR")
 
         def stand():
             from app import reserves

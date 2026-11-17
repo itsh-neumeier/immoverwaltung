@@ -831,6 +831,7 @@ async def fixed_save(request: Request, cid: int, s: Session = Depends(get_sessio
     c.active = bool(form.get("active"))
     c.reserve = bool(form.get("reserve"))
     c.reserve_label = " ".join(str(form.get("reserve_label", "")).split())[:60]
+    c.payee_rules = " ".join(str(form.get("payee_rules", "")).split())[:400]
     if cid == 0:
         s.add(c)
     s.commit()
@@ -880,6 +881,7 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
     a.key = key
     a.reserve = bool(form.get("reserve"))
     a.reserve_label = " ".join(str(form.get("reserve_label", "")).split())[:60]
+    a.payee_rules = " ".join(str(form.get("payee_rules", "")).split())[:400]
     a.active = bool(form.get("active"))
     if aid == 0:
         s.add(a)

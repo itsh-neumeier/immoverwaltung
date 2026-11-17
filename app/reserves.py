@@ -9,6 +9,7 @@ Girokonto aufs Rücklagenkonto übertragen; das Rücklagenbuch zeigt den Stand j
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
@@ -337,7 +338,10 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
     bal = balances(s, bld)
     pots_total = round(sum(r["total"] for r in bal), 2)
     free = round(bld.bank_reserve_balance - pots_total, 2) if bld.bank_reserve_balance is not None else None
-    return _page(request, "reserves.html", open_ids=open_ids, pick=PICK, surescore=SURE, detected=detect_standing_orders(s, bld),
+    refunds = open_refunds(s, bld) if scope.is_super() else []
+    return _page(request, "reserves.html", refunds=refunds, is_super=scope.is_super(), refunds_total=round(sum(r["amount"] for r in refunds
+                 if not r["probable"]), 2), next_month=_add_months(date.today().replace(day=1), 1).strftime("%Y-%m"),
+                 open_ids=open_ids, pick=PICK, surescore=SURE, detected=detect_standing_orders(s, bld),
                  plan_rows=plan_stats(s, bld, bal), pots_total=pots_total, free=free, lines=lines, cands=cands, sure=sure, missing=missing,
                  matched_lines=matched_lines, entry_refs=entry_refs, edit_plan=edit_plan, bld=bld, buildings=scope.filter_query(s.query(Building), Building.id)
                  .order_by(Building.sort, Building.id).all(), items=items, total=round(sum(i.amount for i in items), 2),
@@ -461,6 +465,11 @@ def export_delete(eid: int, s: Session = Depends(get_session)):
     if ex.status == "done":
         return _redirect(f"/admin/reserves?building={bid}",
                          "Bereits als ausgeführt bestätigt – erst die Bestätigung zurücknehmen.")
+    from .db import FinTxn
+
+    for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id):
+        if e.fin_txn_id and (ft := s.get(FinTxn, e.fin_txn_id)) is not None:
+            ft.reserve_done = ""  # Rechnung ist wieder offen
     s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id).delete()
     s.delete(ex)
     s.commit()
@@ -498,7 +507,7 @@ async def entry_add(request: Request, s: Session = Depends(get_session)):
         debtor, creditor = accounts(bld)
         label = next((p.label for r, p in positions(s, bld).items() if r == ref), names[ref].upper())
         code = f"GID: {gid(bld.code)} " if bld.code else ""
-        text = f"AUSZAHLUNG RUECKLAGE {code}{label} {_de(amount)} EUR {note}".upper()
+        text = f"GUTSCHRIFT RUECKLAGE {label} {code}{_de(amount)} EUR {note}".upper()
         exec_date = when if when > date.today() and sepa.is_business_day(when) else sepa.next_business_day()
         s.flush()
         e.e2e = f"RLAUS{e.id}"
@@ -558,6 +567,7 @@ async def plan_save(request: Request, s: Session = Depends(get_session)):
     p.funding = "dauerauftrag" if form.get("funding") == "dauerauftrag" else "sepa"
     p.keywords = " ".join(str(form.get("keywords", "")).split())[:200]
     p.standing_order = round(rnd.parse_float(form.get("standing_order")) or 0.0, 2)
+    p.payee_rules = " ".join(str(form.get("payee_rules", "")).split())[:400]
     p.active = bool(form.get("active")) or not pid
     if not pid:
         s.add(p)
@@ -973,3 +983,187 @@ async def bank_line_action(request: Request, lid: int, s: Session = Depends(get_
     n = link(s, line, str(form.get("match", "")))
     s.commit()
     return _redirect(back, f"{n} Buchung(en) zugeordnet" if n else "Bitte eine passende Buchung auswählen.")
+
+
+# --------------------------------------------------------------------------- Gutschriften: Rechnungen vom Hauptkonto erstatten
+def parse_payee(text: str) -> list[list]:
+    """„Rechnung kommt von“: Alternativen mit Komma, Bedingungen einer Alternative mit „&“ (alle müssen passen),
+    z. B. ``MARKT HIRSCHAID & zweck:GRUNDSTEUER, iban:DE…``."""
+    from . import finance
+
+    groups = []
+    for alt in re.split(r"[,\n;]", text or ""):
+        conds = [r for part in alt.split("&") for r in finance.parse_rules(part)]
+        if conds:
+            groups.append(conds)
+    return groups
+
+
+def _payee_sources(s: Session, bld: Building) -> list[tuple]:
+    """(ref, Position, Regel-Gruppen, ab Datum) für Töpfe/Positionen mit „Rechnung kommt von“."""
+    pos = positions(s, bld)
+    out = []
+    for p in plans(s, bld, active_only=True):
+        if p.payee_rules.strip() and f"rp:{p.id}" in pos:
+            out.append((f"rp:{p.id}", pos[f"rp:{p.id}"], parse_payee(p.payee_rules), _month(p.start)))
+    for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)):
+        if (f.payee_rules or "").strip():
+            out.append((f"fc:{f.id}", pos.get(f"fc:{f.id}"), parse_payee(f.payee_rules), _start(bld)))
+    for a in s.query(Allocation).filter(Allocation.reserve.is_(True)):
+        if (a.payee_rules or "").strip():
+            out.append((f"al:{a.id}", pos.get(f"al:{a.id}"), parse_payee(a.payee_rules), _start(bld)))
+    return [x for x in out if x[1] is not None and x[2]]
+
+
+def _rule_hit(groups, t) -> int:
+    """Trefferwert der besten Alternative (Summe der Bedingungen), 0 = passt nicht."""
+    from . import finance
+
+    name, purpose, iban = finance.norm(t.name), finance.norm(t.purpose), sepa.normalize_iban(t.iban)
+    best = 0
+    for conds in groups:
+        total = 0
+        for r in conds:
+            if r.field == "iban":
+                hit, size = bool(iban) and iban == r.text, 98
+            elif r.field in ("name", "purpose"):
+                hit, size = bool(r.rx.search(name if r.field == "name" else purpose)), len(r.text)
+            else:
+                hit, size = False, 0
+            if not hit:
+                total = 0
+                break
+            total += size
+        best = max(best, total)
+    return best
+
+
+def refund_purpose(label: str, t, amount: float, building: Optional[Building]) -> str:
+    """z. B. GUTSCHRIFT RUECKLAGE GRUNDSTEUER GID: 134 RECHNUNG MARKT HIRSCHAID 16.11.2026 147,99 EUR"""
+    code = f"GID: {gid(building.code)} " if building and building.code else ""
+    payee = sepa.clean(t.name or t.purpose, 40, umlauts=False).upper()
+    date_ = f"{t.booking_date:%d.%m.%Y} " if t.booking_date else ""
+    return sepa.clean(f"GUTSCHRIFT RUECKLAGE {label} {code}RECHNUNG {payee} {date_}{_de(amount)} EUR", 140,
+                      umlauts=False)
+
+
+def open_refunds(s: Session, bld: Building) -> list[dict]:
+    """Rechnungen, die vom Hauptkonto bezahlt wurden und zu einem Topf gehören, aber noch nicht aus der Rücklage
+    erstattet sind. „Vermutlich erstattet“: eine Auszahlung aus dem Topf ±21 Tage mit mind. 95 % des Betrags."""
+    from . import finance
+    from .db import FinTxn
+
+    sources = _payee_sources(s, bld)
+    iban = finance.finance_iban(s)
+    if not sources or not iban:
+        return []
+    pool = defaultdict(list)  # Auszahlungen je Topf mit Restbetrag (eine Gutschrift kann mehrere Rechnungen abdecken)
+    for e in s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id, ReserveEntry.amount < 0,
+                                          ReserveEntry.fin_txn_id.is_(None)).order_by(ReserveEntry.booking_date):
+        pool[e.ref].append([e, -e.amount])
+    rows = []
+    own = {sepa.normalize_iban(x) for x in (bld.account_iban, bld.reserve_iban, iban) if x}
+    for t in s.query(FinTxn).filter(FinTxn.account_iban == iban, FinTxn.amount < 0, FinTxn.reserve_done == "") \
+            .order_by(FinTxn.booking_date, FinTxn.id):
+        if sepa.normalize_iban(t.iban) in own:
+            continue  # Umbuchung zwischen eigenen Konten ist keine Rechnung
+        best = None
+        for ref, pos, rules, since in sources:
+            if since and t.booking_date and t.booking_date < since:
+                continue
+            score = _rule_hit(rules, t)
+            if score and (best is None or score > best[0]):
+                best = (score, ref, pos)
+        if best is None:
+            continue
+        _, ref, pos = best
+        amount = round(-t.amount, 2)
+        covered, last = 0.0, None
+        for item in pool.get(ref, []):  # Auszahlungen aus dem Topf ±21 Tage anrechnen
+            e, left = item
+            if left < 0.005 or not (t.booking_date and e.booking_date) or abs((e.booking_date - t.booking_date).days) > 21:
+                continue
+            take = min(left, amount - covered)
+            item[1] -= take
+            covered += take
+            last = e
+            if covered >= amount - 0.005:
+                break
+        rest = round(amount - covered, 2)
+        full = rest <= max(0.05 * amount, 0.01)  # Rundungs-/Kleinstdifferenzen (z. B. 147,00 statt 147,99)
+        rows.append({"txn": t, "ref": ref, "pos": pos, "amount": amount if not covered else (0.0 if full else rest),
+                     "bill": amount, "covered": round(covered, 2), "probable": last if full else None,
+                     "partial": last if covered and not full else None,
+                     "purpose": refund_purpose(pos.label, t, rest if covered and not full else amount, bld)})
+    return rows
+
+
+@router.post("/admin/reserves/refunds/export")
+async def refunds_export(request: Request, s: Session = Depends(get_session)):
+    """Sammelauftrag Gutschriften: Rücklagenkonto → Hauptkonto, je Rechnung eine Überweisung."""
+    from .db import FinTxn
+
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = f"/admin/reserves?building={bld.id}#gutschriften"
+    keys = {int(x) for x in form.getlist("bills") if str(x).isdigit()}
+    rows = [r for r in open_refunds(s, bld) if r["txn"].id in keys and r["amount"] >= 0.01]
+    if not rows:
+        return _redirect(back, "Bitte mindestens eine Rechnung auswählen.")
+    exec_date = _date(form.get("exec_date"), sepa.next_business_day())
+    debtor, creditor = accounts(bld)
+    try:
+        msg_id, xml = sepa.credit_transfer(creditor, debtor, [sepa.Transfer(r["amount"], r["purpose"], f"RG{r['txn'].id}")
+                                                              for r in rows], exec_date,
+                                           bld.sepa_format or "pain.001.001.09")
+    except sepa.SepaError as e:
+        return _redirect(back, f"SEPA-Datei nicht erzeugt: {e}")
+    ex = _store_export(s, request, bld, "out", xml, msg_id, exec_date, len(rows), sum(r["amount"] for r in rows))
+    for r in rows:
+        s.add(ReserveEntry(building_id=bld.id, ref=r["ref"], name=r["pos"].name, booking_date=exec_date,
+                           amount=-r["amount"], kind="out", export_id=ex.id, note=r["purpose"], e2e=f"RG{r['txn'].id}",
+                           fin_txn_id=r["txn"].id))
+        s.get(FinTxn, r["txn"].id).reserve_done = "erstattet"
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
+                     f"Sammelauftrag Gutschriften erzeugt: {len(rows)} Überweisung(en), {_de(ex.total)} € – im "
+                     "Online-Banking des Rücklagenkontos hochladen, nach Ausführung bestätigen.")
+
+
+@router.post("/admin/reserves/refunds/{tid}")
+async def refund_mark(request: Request, tid: int, s: Session = Depends(get_session)):
+    """Rechnung als bereits erstattet bzw. „nicht erstatten“ markieren (oder zurücksetzen)."""
+    from .db import FinTxn
+
+    t = s.get(FinTxn, tid)
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    if t is None:
+        raise HTTPException(404)
+    action = str(form.get("action", ""))
+    t.reserve_done = {"done": "erstattet", "skip": "ignoriert"}.get(action, "")
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}#gutschriften",
+                     {"done": "Als bereits erstattet markiert", "skip": "Wird nicht erstattet"}.get(action, "Zurückgesetzt"))
+
+
+@router.post("/admin/reserves/plans/cut")
+async def plans_cut(request: Request, s: Session = Depends(get_session)):
+    """Umstellung: Daueraufträge enden, ab Monat X erzeugt die App monatlich den Sammelauftrag (SEPA-Datei)."""
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    month = str(form.get("month", ""))
+    if not _month(month):
+        return _redirect(f"/admin/reserves?building={bld.id}#feste", "Bitte einen Monat wählen.")
+    n = 0
+    for p in plans(s, bld, active_only=True):
+        if p.funding == "dauerauftrag":
+            p.funding, p.start, p.interval = "sepa", month, 1
+            if not p.annual_amount and p.standing_order:
+                p.annual_amount = round(p.standing_order * 12, 2)
+            p.standing_order = 0.0
+            n += 1
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}#feste",
+                     f"{n} Töpfe ab {month[5:]}/{month[:4]} auf monatlichen Sammelauftrag umgestellt – Daueraufträge "
+                     "bei der Bank löschen.")

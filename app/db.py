@@ -143,6 +143,7 @@ class ReservePlan(Base):
     funding: Mapped[str] = mapped_column(String(20), default="sepa")  # sepa (Datei aus der App) | dauerauftrag (Bank)
     keywords: Mapped[str] = mapped_column(String(200), default="")  # Stichworte zum Erkennen im Kontoauszug
     standing_order: Mapped[float] = mapped_column(Float, default=0.0)  # aktueller Dauerauftrag €/Monat (Ist)
+    payee_rules: Mapped[str] = mapped_column(String(400), default="")  # Rechnung kommt von … (Hauptkonto, für Gutschriften)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -177,6 +178,7 @@ class FinTxn(Base):
     purpose: Mapped[str] = mapped_column(Text, default="")
     digest: Mapped[str] = mapped_column(String(64), default="", index=True)
     category_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # von Hand gesetzt (hat Vorrang)
+    reserve_done: Mapped[str] = mapped_column(String(20), default="")  # Gutschrift aus Rücklage: erstattet | ignoriert
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -251,6 +253,7 @@ class ReserveEntry(Base):
     e2e: Mapped[str] = mapped_column(String(35), default="", index=True)  # Kundenreferenz (End-to-End) der Überweisung
     bank_line_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Umsatz Rücklagenkonto (Kontoauszug)
     main_line_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Umsatz Hauptkonto (Kontoauszug)
+    fin_txn_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # erstattete Rechnung (Hauptkonto-Umsatz)
     export_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     note: Mapped[str] = mapped_column(String(140), default="")  # Verwendungszweck bzw. Notiz
 
@@ -303,6 +306,7 @@ class FixedCost(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     reserve: Mapped[bool] = mapped_column(Boolean, default=False)  # zeitversetzt bezahlt → Rücklage bilden
     reserve_label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. IPTV
+    payee_rules: Mapped[str] = mapped_column(String(400), default="")  # Rechnung kommt von … (Hauptkonto, für Gutschriften)
 
 
 class Allocation(Base):
@@ -322,6 +326,7 @@ class Allocation(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     reserve: Mapped[bool] = mapped_column(Boolean, default=False)  # zeitversetzt bezahlt → Rücklage bilden
     reserve_label: Mapped[str] = mapped_column(String(60), default="")  # Zweck im Verwendungszweck, z. B. WASSERGELD
+    payee_rules: Mapped[str] = mapped_column(String(400), default="")  # Rechnung kommt von … (Hauptkonto, für Gutschriften)
 
 
 class Billing(Base):
