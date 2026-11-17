@@ -314,7 +314,7 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
                .order_by(ReserveEntry.booking_date, ReserveEntry.id)
                if not (e.bank_line_id or e.main_line_id)] if has_bank else []
     matched_lines = [l for l in s.query(BankLine).filter(BankLine.building_id == bld.id)
-                     .order_by(BankLine.booking_date.desc(), BankLine.id.desc()).limit(200) if l.entry_ids or l.ignored]
+                     .order_by(BankLine.booking_date.desc(), BankLine.id.desc()).limit(600) if l.entry_ids or l.ignored]
     entry_refs = {e.id: e.ref for e in s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id)}
     edit_plan = s.get(ReservePlan, plan) if plan else None
     if edit_plan is not None and edit_plan.building_id != bld.id:
@@ -322,7 +322,7 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
     items = pending(s, bld)
     names = all_positions(s)
     entries = s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id) \
-        .order_by(ReserveEntry.booking_date.desc(), ReserveEntry.id.desc()).limit(300).all()
+        .order_by(ReserveEntry.booking_date.desc(), ReserveEntry.id.desc()).limit(1000).all()
     exports = s.query(SepaExport).filter(SepaExport.building_id == bld.id).order_by(SepaExport.id.desc()).limit(50).all()
     debtor, creditor = accounts(bld)
     problems = []
@@ -603,14 +603,14 @@ def _core(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", t)
 
 
-def _is_mirror(a: BankLine, b: BankLine, bld: Optional[Building]) -> bool:
-    """Gleiche Umbuchung auf beiden eigenen Konten: Betrag gegengleich, zeitnah und gleicher Zweck – oder das
-    Gegenkonto ist jeweils das andere eigene Konto."""
+def _is_mirror(a: BankLine, b: BankLine, bld: Optional[Building], strict: bool = False) -> bool:
+    """Gleiche Umbuchung auf beiden eigenen Konten: Betrag gegengleich, zeitnah und gleicher Zweck (``strict``) –
+    oder (schwächer) das Gegenkonto ist jeweils das andere eigene Konto."""
     if a.account == b.account or abs(a.amount + b.amount) > 0.005 or not _near(a.booking_date, b.booking_date, 7):
         return False
     if (a.e2e and a.e2e == b.e2e) or (_core(a.purpose) and _core(a.purpose) == _core(b.purpose)):
         return True
-    if bld is None:
+    if strict or bld is None:
         return False
     own = {"main": sepa.normalize_iban(bld.account_iban), "reserve": sepa.normalize_iban(bld.reserve_iban)}
     return (_near(a.booking_date, b.booking_date, 3) and sepa.normalize_iban(a.iban) == own[b.account]
@@ -662,8 +662,10 @@ def candidates(s: Session, line: BankLine, limit: int = 60) -> list[dict]:
         elif same_amount and other_id is not None:
             o = others.get(other_id) or s.get(BankLine, other_id)
             others[other_id] = o
-            if o is not None and _is_mirror(o, line, s.get(Building, line.building_id)):
+            if o is not None and _is_mirror(o, line, None, strict=True):
                 score = 98  # Gegenbuchung (z. B. Dauerauftrag: Abbuchung Hauptkonto ↔ Gutschrift Rücklagenkonto)
+            elif o is not None and _is_mirror(o, line, s.get(Building, line.building_id)):
+                score = 70  # nur Betrag/Konto passen (mehrere gleiche Beträge am Tag möglich) – nicht vorauswählen
             elif o is not None and _near(o.booking_date, line.booking_date):
                 score = 60
         elif same_amount and purpose and _squash(e.note) and _squash(e.note) in purpose:
@@ -715,12 +717,16 @@ def _pair_mirror(s: Session, e: ReserveEntry, line: BankLine) -> None:
         return
     other_acc = "main" if line.account == "reserve" else "reserve"
     bld = s.get(Building, line.building_id)
-    for o in s.query(BankLine).filter(BankLine.building_id == line.building_id, BankLine.account == other_acc,
-                                      BankLine.ignored.is_(False)):
-        if not o.entry_ids and _is_mirror(o, line, bld):
-            setattr(e, other_fld, o.id)
-            o.entry_ids = [e.id]
-            return
+    free = [o for o in s.query(BankLine).filter(BankLine.building_id == line.building_id, BankLine.account == other_acc,
+                                                BankLine.ignored.is_(False)) if not o.entry_ids]
+    strict = [o for o in free if _is_mirror(o, line, bld, strict=True)]
+    # gleicher Zweck zuerst; nur über Betrag/Gegenkonto, wenn es genau einen Kandidaten gibt (sonst z. B. ADAC ↔ Amazon)
+    weak = [o for o in free if _is_mirror(o, line, bld)] if not strict else []
+    match = min(strict, key=lambda o: abs((o.booking_date - line.booking_date).days)) if strict else \
+        (weak[0] if len(weak) == 1 else None)
+    if match is not None:
+        setattr(e, other_fld, match.id)
+        match.entry_ids = [e.id]
 
 
 def link(s: Session, line: BankLine, value: str) -> int:
@@ -948,7 +954,7 @@ async def bank_unhide_all(request: Request, s: Session = Depends(get_session)):
     return _redirect(f"/admin/reserves?building={bld.id}#abgleich", f"{n} Umsätze wieder eingeblendet")
 
 
-@router.post("/admin/reserves/bank/{lid}")
+@router.post("/admin/reserves/bank/{lid:int}")
 async def bank_line_action(request: Request, lid: int, s: Session = Depends(get_session)):
     line = s.get(BankLine, lid)
     if line is None or not scope.can(line.building_id):
@@ -1167,3 +1173,49 @@ async def plans_cut(request: Request, s: Session = Depends(get_session)):
     return _redirect(f"/admin/reserves?building={bld.id}#feste",
                      f"{n} Töpfe ab {month[5:]}/{month[:4]} auf monatlichen Sammelauftrag umgestellt – Daueraufträge "
                      "bei der Bank löschen.")
+
+
+@router.post("/admin/reserves/entry/{eid}/move")
+async def entry_move(request: Request, eid: int, s: Session = Depends(get_session)):
+    """Buchung in einen anderen Topf umbuchen (Kontoverknüpfungen bleiben erhalten)."""
+    e = s.get(ReserveEntry, eid)
+    if e is None or not scope.can(e.building_id):
+        raise HTTPException(404)
+    form = await request.form()
+    ref = str(form.get("ref", ""))
+    names = all_positions(s)
+    if ref not in names:
+        return _redirect(f"/admin/reserves?building={e.building_id}#buchungen", "Bitte einen Topf wählen.")
+    old = names.get(e.ref, e.name)
+    e.ref, e.name = ref, names[ref]
+    s.commit()
+    return _redirect(f"/admin/reserves?building={e.building_id}#buchungen", f"Umgebucht: {old} → {names[ref]}")
+
+
+def repair_mirrors(s: Session, bld: Building) -> int:
+    """Gegenbuchungen neu zuordnen: Hauptkonto-Verknüpfungen von Buchungen aus dem Rücklagenkonto lösen und mit der
+    Regel „gleicher Zweck zuerst“ neu paaren. Liefert die Zahl geänderter Paarungen."""
+    entries = s.query(ReserveEntry).filter(ReserveEntry.building_id == bld.id, ReserveEntry.bank_line_id.isnot(None),
+                                           ReserveEntry.main_line_id.isnot(None), ReserveEntry.export_id.is_(None)).all()
+    before = {e.id: e.main_line_id for e in entries}
+    for e in entries:
+        o = s.get(BankLine, e.main_line_id)
+        if o is not None:
+            o.entry_ids = [x for x in (o.entry_ids or []) if x != e.id]
+        e.main_line_id = None
+    s.flush()
+    for e in sorted(entries, key=lambda x: x.id):
+        line = s.get(BankLine, e.bank_line_id)
+        if line is not None:
+            _pair_mirror(s, e, line)
+    s.flush()
+    return sum(1 for e in entries if e.main_line_id != before[e.id])
+
+
+@router.post("/admin/reserves/bank/repair-mirrors")
+async def bank_repair_mirrors(request: Request, s: Session = Depends(get_session)):
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    n = repair_mirrors(s, bld)
+    s.commit()
+    return _redirect(f"/admin/reserves?building={bld.id}#abgleich", f"Gegenbuchungen neu zugeordnet: {n} Paarung(en) geändert")

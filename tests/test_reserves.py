@@ -320,3 +320,51 @@ def test_standing_orders_detect_balances_and_pairing():
         with SessionLocal() as s:
             assert s.query(ReserveEntry).count() == 8
             assert not s.query(BankLine).filter(BankLine.account == "main", BankLine.amount == 147.99).one().entry_ids
+
+
+def test_same_amount_same_day_pairs_by_purpose_and_move():
+    from app import reserves
+    from app.db import BankLine, ReservePlan
+
+    res = [{"amount": 7.0, "purpose": "RÜCKBILDUNG ADAC BEITRAG ZYKLUS P.A.", "date": "2026-10-01"},
+           {"amount": 7.0, "purpose": "RÜCKBILDUNG AMAZON PRIME BEITRAG ZYKLUS P.A.", "date": "2026-10-01"}]
+    main = [{"amount": -7.0, "purpose": "RÜCKBILDUNG AMAZON PRIME BEITRAG ZYKLUS P.A.", "date": "2026-10-01", "other": RESERVE},
+            {"amount": -7.0, "purpose": "RÜCKBILDUNG ADAC BEITRAG ZYKLUS P.A.", "date": "2026-10-01", "other": RESERVE}]
+    with TestClient(app) as c:
+        c.post("/admin/settings", data={"vat_rate": "19"})
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid, b.account_name, b.reserve_name = b.id, "Timo Muster", "Timo Muster"
+            b.account_iban, b.reserve_iban = GIRO, RESERVE
+            for n in ("ADAC", "Amazon Prime", "Abo · Sonstiges"):
+                s.add(ReservePlan(building_id=bid, name=n, label=n.upper(), keywords=n.upper() if n != "Abo · Sonstiges" else "XYZ",
+                                  funding="dauerauftrag", active=True, start="2026-01"))
+            s.commit()
+        c.post("/admin/reserves/bank/import", data={"building": bid},
+               files={"file": ("r.xml", camt(RESERVE, res), "application/xml")})
+        c.post("/admin/reserves/bank/import", data={"building": bid},
+               files={"file": ("h.xml", camt(GIRO, main), "application/xml")})
+        c.post("/admin/reserves/bank/confirm-sure", data={"building": bid})
+
+        def pairs():
+            with SessionLocal() as s:
+                return {(s.get(BankLine, e.bank_line_id).purpose[12:16], s.get(BankLine, e.main_line_id).purpose[12:16])
+                        for e in s.query(ReserveEntry)}
+        assert pairs() == {("ADAC", "ADAC"), ("AMAZ", "AMAZ")}
+        # absichtlich falsch paaren → „Gegenbuchungen neu zuordnen“ repariert
+        with SessionLocal() as s:
+            e1, e2 = s.query(ReserveEntry).order_by(ReserveEntry.id).all()
+            l1, l2 = s.get(BankLine, e1.main_line_id), s.get(BankLine, e2.main_line_id)
+            e1.main_line_id, e2.main_line_id = l2.id, l1.id
+            l1.entry_ids, l2.entry_ids = [e2.id], [e1.id]
+            s.commit()
+            eid = e1.id
+        assert "2 Paarung(en) geändert" in c.post("/admin/reserves/bank/repair-mirrors", data={"building": bid}).text
+        assert pairs() == {("ADAC", "ADAC"), ("AMAZ", "AMAZ")}
+        # Umbuchen in anderen Topf
+        with SessionLocal() as s:
+            other = s.query(ReservePlan).filter(ReservePlan.name == "Abo · Sonstiges").one().id
+        r = c.post(f"/admin/reserves/entry/{eid}/move", data={"ref": f"rp:{other}"})
+        assert "→ Abo · Sonstiges" in r.text
+        with SessionLocal() as s:
+            assert s.get(ReserveEntry, eid).ref == f"rp:{other}" and s.get(ReserveEntry, eid).main_line_id
