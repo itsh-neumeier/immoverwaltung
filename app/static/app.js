@@ -127,3 +127,13 @@
   }
   document.addEventListener("DOMContentLoaded", () => { pushSetup().catch(() => {}); });
 })();
+
+// Text in die Zwischenablage (Wiederherstellungscodes, Schlüssel, Challenge)
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-copy-text]'); if (!b) return;
+  const text = b.dataset.copyText;
+  const done = () => { const o = b.textContent; b.textContent = '✔ kopiert'; setTimeout(() => b.textContent = o, 1500); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done);
+  else { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+         document.execCommand('copy'); ta.remove(); done(); }
+});

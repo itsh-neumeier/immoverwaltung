@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Zwei-Faktor-Anmeldung{% endblock %}
+{% block content %}
+<h1>Zwei-Faktor-Anmeldung</h1>
+{% if codes %}
+<div class="card" style="max-width:620px">
+  {% if just_enabled %}<p>✅ <b>Eingerichtet.</b> Ab sofort wird beim Anmelden der Code aus der App abgefragt. Andere Sitzungen wurden abgemeldet.</p>{% endif %}
+  <h2 style="margin-top:0">Wiederherstellungscodes</h2>
+  <p>Jetzt sicher aufbewahren (ausdrucken oder im Passwort-Manager) – sie werden <b>nur einmal angezeigt</b>. Jeder Code funktioniert genau einmal, falls das Handy verloren geht.</p>
+  <pre class="recovery">{% for c in codes %}{{ c }}
+{% endfor %}</pre>
+  <button type="button" class="sec" data-copy-text="{{ codes|join('\n') }}">Kopieren</button>
+  <a class="btn" href="/admin">Weiter</a>
+</div>
+{% elif u.totp_enabled %}
+<div class="card" style="max-width:620px">
+  <p>✅ Eingerichtet · noch <b>{{ (u.totp_recovery or [])|length }}</b> Wiederherstellungscodes.</p>
+  <form method="post" action="/account/2fa/recovery">
+    <label>Aktueller Code aus der App</label>
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="14" required>
+    <button>Neue Wiederherstellungscodes</button>
+    <button class="sec" formaction="/account/2fa/renew">Neues Handy – neu einrichten</button>
+    {% if not required %}<button class="danger" formaction="/account/2fa/disable" onclick="return confirm('Zwei-Faktor-Anmeldung ausschalten?')">Ausschalten</button>{% endif %}
+  </form>
+  {% if required %}<p class="muted">Für Verwalter ist die Zwei-Faktor-Anmeldung Pflicht (Einstellung unter Benutzer).</p>{% endif %}
+</div>
+{% else %}
+<div class="card" style="max-width:620px">
+  {% if required %}<p><b>Für Verwalter Pflicht:</b> ImmoVerwaltung kann Bankaufträge einreichen – deshalb zusätzlich ein Code vom Handy.</p>{% endif %}
+  <ol class="steps">
+    <li>Authenticator-App installieren (z. B. Google Authenticator, Microsoft Authenticator, Aegis, 2FAS, Bitwarden, 1Password).</li>
+    <li>In der App „Konto hinzufügen“ → QR-Code scannen:
+      <div class="qr">{{ qr|safe }}</div>
+      <p class="muted">Kein Scan möglich (z. B. am Handy selbst)? <a href="{{ link }}">Direkt in der App öffnen</a> oder den Schlüssel von Hand eingeben:<br><code class="secret">{{ secret }}</code> <button type="button" class="sec small" data-copy-text="{{ secret|replace(' ', '') }}">Kopieren</button></p>
+    </li>
+    <li>Den angezeigten 6-stelligen Code eingeben:</li>
+  </ol>
+  <form method="post" action="/account/2fa/enable">
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="7" required autofocus style="font-size:1.4rem;letter-spacing:.2em;text-align:center;max-width:12rem">
+    <button>Bestätigen &amp; einschalten</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

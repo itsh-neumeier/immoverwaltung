@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Bankzugang (FinTS){% endblock %}
+{% block content %}
+<h1>Bankzugang (FinTS)</h1>
+<p class="muted">Direkte Verbindung zur Bank per FinTS (PIN/TAN): Umsätze und Kontostände abrufen (statt CAMT-Datei hochladen),
+SEPA-Aufträge der App einreichen und Überträge zwischen den eigenen Konten – jeder Auftrag wird mit TAN freigegeben
+(S-pushTAN: in der App bestätigen).</p>
+
+{# ---------------------------------------------------------------- laufender Vorgang (TAN / Empfängerprüfung) #}
+{% for a in accesses %}{% set j = jobs.get(a.id) %}{% if j and j.waiting %}{% set info = j.challenge_info() %}
+<div class="card challenge" id="vorgang" data-poll="{{ '/admin/bank/job/%d/poll'|format(a.id) if info.type == 'decoupled' else '' }}">
+  <h2 style="margin-top:0">🔐 {{ j.title }} – {{ a.name }}</h2>
+  {% if info.type == 'vop' %}
+    <p><b>Empfängerprüfung:</b> {{ info.text }}{% if info.close_name %} – bei der Bank hinterlegt: <b>{{ info.close_name }}</b>{% endif %}{% if info.reason %} ({{ info.reason }}){% endif %}</p>
+    <p class="muted">Bei Abweichung kann das Geld beim falschen Empfänger landen; die Bank haftet dann nicht. Nur bestätigen, wenn der Empfänger sicher stimmt (bei eigenen Konten meist unkritisch).</p>
+    <form method="post" action="/admin/bank/job/{{ a.id }}">
+      <button name="vop_ok" value="1">Trotzdem ausführen</button>
+      <button class="sec" name="cancel" value="1">Abbrechen</button>
+    </form>
+  {% elif info.type == 'decoupled' %}
+    {% if info.vop %}<p><b>Empfängerprüfung:</b> {{ info.vop }}</p>{% endif %}
+    <p>{{ info.html|safe if info.html else info.text }}</p>
+    <p><span class="spinner"></span> <b>Bitte in der S-pushTAN-App (bzw. Banking-App) freigeben</b> – diese Seite prüft automatisch.</p>
+    <form method="post" action="/admin/bank/job/{{ a.id }}">
+      <button>Freigegeben – weiter</button>
+      <button class="sec" name="cancel" value="1">Abbrechen</button>
+    </form>
+  {% else %}
+    {% if info.vop %}<p><b>Empfängerprüfung:</b> {{ info.vop }}</p>{% endif %}
+    <p>{{ info.html|safe if info.html else info.text }}</p>
+    {% if info.image %}<p><img src="{{ info.image }}" alt="TAN-Grafik"></p>{% endif %}
+    {% if info.hhduc %}<p class="muted">chipTAN-Code: <code>{{ info.hhduc }}</code></p>{% endif %}
+    <form method="post" action="/admin/bank/job/{{ a.id }}">
+      <label>TAN</label>
+      <input type="text" name="tan" inputmode="numeric" autocomplete="one-time-code" required autofocus style="max-width:14rem;font-size:1.3rem;letter-spacing:.15em">
+      <button>Senden</button>
+      <button class="sec" name="cancel" value="1" formnovalidate>Abbrechen</button>
+    </form>
+  {% endif %}
+  <p class="muted" style="margin-bottom:0">Der Vorgang verfällt nach 10 Minuten.</p>
+</div>
+{% endif %}{% endfor %}
+
+{# ---------------------------------------------------------------- Produkt-ID #}
+{% if not product %}
+<div class="warn">Noch keine <b>FinTS-Produktregistrierung</b> hinterlegt – ohne sie lehnt die Bank die Verbindung ab.
+Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#einstellungen">Einstellungen</a> eintragen.</div>
+{% endif %}
+
+{# ---------------------------------------------------------------- Bankzugänge #}
+{% for a in accesses %}
+<div class="card" id="bank-{{ a.id }}">
+  <h2 style="margin-top:0">🏦 {{ a.name }} <span class="muted" style="font-size:.9rem">BLZ {{ a.blz }} · {{ a.login }}</span></h2>
+  {% if a.last_error %}<div class="warn">{{ a.last_error }}</div>{% elif a.last_msg %}<p class="muted">Zuletzt: {{ a.last_msg }}</p>{% endif %}
+  {% if a.accounts %}
+  <div class="scroll"><table>
+    <tr><th>Konto</th><th>Art / Produkt</th><th>In der App</th><th class="r">Saldo</th><th>FinTS erlaubt</th></tr>
+    {% for x in a.accounts %}
+    <tr>
+      <td><b>{{ fmt_iban(x.iban) }}</b>{% if x.owner %}<br><span class="muted">{{ x.owner }}</span>{% endif %}</td>
+      <td>{{ x.type or '–' }}{% if x.product %}<br><span class="muted">{{ x.product }}</span>{% endif %}</td>
+      <td>{% for r in roles.get(x.iban, []) %}<div>{{ r }}</div>{% else %}<span class="muted">–</span>{% endfor %}</td>
+      <td class="r">{% if x.balance is defined %}{{ de(x.balance) }} €<br><span class="muted">{{ x.balance_date[8:10] }}.{{ x.balance_date[5:7] }}.</span>{% else %}–{% endif %}</td>
+      <td class="ops">{% if x.ops %}{% for code, label in ops_names.items() %}<span class="{{ 'ok' if code in x.ops else 'no' }}" title="{{ code }}">{{ label }}</span>{% endfor %}{% else %}<span class="muted">Bank nennt keine Liste</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  <p class="muted">Durchgestrichen = laut Bank per FinTS für dieses Konto nicht erlaubt (z. B. Überweisungen vom Sparkonto) – dann bleibt dort der Weg über die manuelle Überweisung mit Kennung.</p>
+  {% endif %}
+  {% if a.last_sync %}<p class="muted">Letzter Umsatzabruf: {{ a.last_sync.strftime('%d.%m.%Y %H:%M') }}{% if a.auto_sync %} · täglich automatisch ab {{ a.sync_hour }} Uhr{% endif %}</p>{% endif %}
+
+  <form method="post" class="inline-actions">
+    {% if not a.pin %}<input type="password" name="pin" placeholder="PIN" autocomplete="off" required style="max-width:12rem">{% endif %}
+    <button formaction="/admin/bank/access/{{ a.id }}/connect" class="sec">{{ 'Konten neu abrufen' if a.accounts else 'Verbinden / Konten abrufen' }}</button>
+    {% if a.accounts %}<button formaction="/admin/bank/access/{{ a.id }}/sync">Umsätze &amp; Salden abrufen</button>
+    <label style="display:inline">ab <input type="date" name="since" style="max-width:11rem"></label>{% endif %}
+  </form>
+
+  <details style="margin-top:10px"><summary>Zugangsdaten &amp; Einstellungen</summary>
+  {% with acc = a %}{% include "_bank_form.html" %}{% endwith %}
+  </details>
+  {% if a.log %}<details><summary>Protokoll</summary>
+    <ul class="muted" style="font-size:.9rem">{% for l in a.log %}<li {% if l.e %}style="color:var(--danger)"{% endif %}>{{ l.t }} – {{ l.m }}</li>{% endfor %}</ul>
+  </details>{% endif %}
+</div>
+{% endfor %}
+
+<details class="card" {% if not accesses %}open{% endif %}><summary><b>+ Bankzugang hinzufügen</b></summary>
+  {% with acc = none %}{% include "_bank_form.html" %}{% endwith %}
+</details>
+
+{# ---------------------------------------------------------------- Aufträge der App #}
+<h2 id="auftraege">Offene Aufträge der App</h2>
+{% if exports %}
+<div class="scroll"><table>
+  <tr><th>Auftrag</th><th>Von</th><th class="r">Summe</th><th>Ausführung</th><th></th></tr>
+  {% for e in exports %}
+  <tr>
+    <td>{{ 'Rücklagen-Zuführung' if e.ex.kind == 'in' else 'Gutschrift / Entnahme' }}{% if e.ex.manual %} (Einzelüberweisung {{ e.ex.token }}){% endif %}
+      <br><span class="muted">{{ e.bld.label }} · {{ e.ex.count }} Überweisung(en) · {{ e.ex.filename }}</span></td>
+    <td>{{ fmt_iban(e.debtor) if e.debtor else '–' }}</td>
+    <td class="r">{{ de(e.ex.total) }} €</td>
+    <td>{{ e.ex.exec_date.strftime('%d.%m.%Y') if e.ex.exec_date and not e.ex.manual else 'sofort' }}</td>
+    <td>{% if e.access %}
+      <form method="post" action="/admin/bank/export/{{ e.ex.id }}" class="inline-actions">
+        {% if not e.access.pin %}<input type="password" name="pin" placeholder="PIN" autocomplete="off" required style="max-width:9rem">{% endif %}
+        <button>{{ 'Terminiert einreichen' if e.future else 'Jetzt einreichen' }}</button>
+        {% if e.future %}<button class="sec" name="now" value="1">Sofort ausführen</button>{% endif %}
+      </form>
+      {% else %}<span class="muted">kein Bankzugang für dieses Konto</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+<p class="muted">Nach erfolgreicher Freigabe wird der Auftrag in den Rücklagen automatisch als ausgeführt bestätigt.
+„Terminiert“ nutzt die Termin(sammel)überweisung der Bank (Ausführungsdatum bleibt); bietet die Bank das nicht an, „Sofort ausführen“ wählen.</p>
+{% else %}<p class="muted">Keine offenen Aufträge – neue entstehen unter <a href="/admin/reserves">Rücklagen &amp; Sammelaufträge</a> (auch der Monatslauf).</p>{% endif %}
+
+{# ---------------------------------------------------------------- Übertrag #}
+{% if own %}
+<h2 id="uebertrag">Übertrag / Überweisung</h2>
+<form method="post" action="/admin/bank/transfer" class="card">
+  <p class="muted" style="margin-top:0">z. B. vom Girokonto aufs Aktivsparen (und zurück, falls die Bank das per FinTS erlaubt).</p>
+  <div class="grid">
+    <div><label>Von</label><select name="from" required>
+      {% for a, x in own %}<option value="{{ x.iban }}">{{ x.type or 'Konto' }} {{ fmt_iban(x.iban) }}{% if roles.get(x.iban) %} – {{ roles[x.iban]|join(', ') }}{% endif %}</option>{% endfor %}
+    </select></div>
+    <div><label>An</label><select name="to" id="tf-to">
+      {% for a, x in own %}<option value="{{ x.iban }}">{{ x.type or 'Konto' }} {{ fmt_iban(x.iban) }}{% if roles.get(x.iban) %} – {{ roles[x.iban]|join(', ') }}{% endif %}</option>{% endfor %}
+      <option value="other">anderes Konto …</option>
+    </select></div>
+  </div>
+  <div class="grid" id="tf-other" hidden>
+    <div><label>Empfänger</label><input type="text" name="to_name" maxlength="70"></div>
+    <div><label>IBAN</label><input type="text" name="to_iban"></div>
+    <div><label>BIC (optional)</label><input type="text" name="to_bic" maxlength="11"></div>
+  </div>
+  <div class="grid">
+    <div><label>Betrag (€)</label><input type="text" name="amount" inputmode="decimal" required></div>
+    <div><label>Verwendungszweck</label><input type="text" name="purpose" maxlength="140" placeholder="UEBERTRAG"></div>
+    <div><label>Ausführung (leer = sofort)</label><input type="date" name="exec_date" min="{{ today.isoformat() }}"></div>
+  </div>
+  {% if not own[0][0].pin %}<label>PIN</label><input type="password" name="pin" autocomplete="off" style="max-width:12rem">{% endif %}
+  <button>Mit TAN freigeben</button>
+</form>
+<script>
+(() => { const s = document.getElementById('tf-to'), o = document.getElementById('tf-other'),
+  src = document.querySelector('select[name=from]');
+  const f = () => { o.hidden = s.value !== 'other'; };
+  const other = () => { if (s.value === src.value) { const opt = [...s.options].find(x => x.value !== src.value); if (opt) s.value = opt.value; } f(); };
+  s.addEventListener('change', f); src.addEventListener('change', other); other(); })();
+</script>
+{% endif %}
+
+{# ---------------------------------------------------------------- Einstellungen #}
+<h2 id="einstellungen">Einstellungen</h2>
+<form method="post" action="/admin/bank/settings" class="card">
+  <label>FinTS-Produktregistrierung (Deutsche Kreditwirtschaft)</label>
+  {% if product_env %}<p>Über die Umgebungsvariable <code>FINTS_PRODUCT_ID</code> gesetzt ✓</p>
+  {% else %}<input type="text" name="fints_product_id" value="{{ st.get('fints_product_id', '') }}" autocomplete="off" style="max-width:24rem">
+  <p class="muted">Wird nur in der Datenbank gespeichert (nicht im Quellcode). Die Banken spielen neue Registrierungen erst nach einigen Tagen ein – vorher lehnt die Bank ab.</p>
+  <button>Speichern</button>{% endif %}
+  <p class="muted" style="margin-bottom:0">Gespeicherte PINs und der Bankzustand sind verschlüsselt –
+  {% if key_env %}Schlüssel aus <code>APP_ENCRYPTION_KEY</code> ✓{% else %}Schlüsseldatei <code>.secret.key</code> neben der Datenbank (empfohlen: <code>APP_ENCRYPTION_KEY</code> als Umgebungsvariable setzen, dann liegt der Schlüssel nicht im Daten-Volume).{% endif %}</p>
+</form>
+<script>
+(() => { const box = document.querySelector('[data-poll]'); if (!box || !box.dataset.poll) return;
+  let n = 0; const tick = async () => {
+    n++; if (n > 100) return;
+    try { const r = await fetch(box.dataset.poll, {cache: 'no-store'}); const d = await r.json();
+      if (d.state === 'waiting') { setTimeout(tick, 3000); return; }
+      location.href = '/admin/bank?msg=' + encodeURIComponent(d.message || 'Erledigt');
+    } catch (e) { setTimeout(tick, 5000); } };
+  setTimeout(tick, 3000); })();
+</script>
+{% endblock %}

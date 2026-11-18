@@ -244,3 +244,19 @@ header.area-home{border-top:3px solid #16a34a}
 :root{--head-h:0px}
 th{position:sticky;top:var(--head-h);z-index:5;background:var(--card);box-shadow:inset 0 -1px 0 var(--line)}
 @media (min-width:1200px){.scroll{overflow:visible}}
+/* Zwei-Faktor-Anmeldung */
+.qr{background:#fff;padding:10px;border-radius:10px;display:inline-block;margin:8px 0}
+.qr svg{width:220px;height:220px;display:block}
+code.secret{font-size:1.05rem;letter-spacing:.06em;word-break:break-all}
+pre.recovery{font-size:1.1rem;letter-spacing:.08em;columns:2;background:var(--bg2,rgba(127,127,127,.08));padding:12px;border-radius:8px}
+ol.steps li{margin-bottom:10px}
+button.small{padding:3px 8px;font-size:.85rem}
+/* Bank (FinTS) */
+.challenge{border:2px solid var(--accent);border-radius:10px;padding:14px;margin:12px 0}
+.challenge img{max-width:260px;background:#fff;padding:6px;border-radius:8px}
+.ops{font-size:.8rem}
+.ops span{display:inline-block;border:1px solid var(--line,#ccc);border-radius:5px;padding:0 5px;margin:1px}
+.ops span.ok{border-color:#16a34a;color:#16a34a}
+.ops span.no{opacity:.55;text-decoration:line-through}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:-2px}
+@keyframes spin{to{transform:rotate(360deg)}}

@@ -76,18 +76,64 @@ async def login(request: Request, s: Session = Depends(get_session)):
         return _redirect(f"/login?next={quote(nxt)}", "Benutzername oder Passwort falsch.")
     for k in keys:
         auth.login_throttle.clear(k)
+    if u.totp_enabled:  # zweiter Schritt: Code aus der Authenticator-App
+        resp = RedirectResponse(f"/login/2fa?next={quote(nxt)}", status_code=303)
+        resp.set_cookie(auth.PENDING_COOKIE, auth.make_pending(s, u, bool(form.get("remember"))),
+                        max_age=auth.PENDING_MINUTES * 60, httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https", path="/login")
+        return resp
+    return _finish_login(request, s, u, bool(form.get("remember")), nxt, bool(form.get("next")))
+
+
+def _finish_login(request: Request, s: Session, u: User, remember: bool, nxt: str, explicit_next: bool = True):
     u.last_login = datetime.now()
     s.commit()
-    days = auth.REMEMBER_DAYS if form.get("remember") else 0.5
+    days = auth.REMEMBER_DAYS if remember else 0.5
     is_admin = u.role in auth.ADMIN_ROLES
     if not is_admin and (nxt.startswith("/admin") or nxt.startswith("/api/")):
         nxt = "/"  # Mieter: immer „Mein Zuhause“
-    elif is_admin and nxt == "/" and not form.get("next"):
+    elif is_admin and nxt == "/" and not explicit_next:
         nxt = "/admin"
     resp = RedirectResponse(nxt, status_code=303)
     _set_cookie(resp, request, auth.make_cookie(s, u, days), days)
     resp.set_cookie(branding.ROLE_COOKIE, "admin" if is_admin else "tenant", max_age=365 * 86400,
                     samesite="lax", secure=request.url.scheme == "https", path="/")
+    resp.delete_cookie(auth.PENDING_COOKIE, path="/login")
+    return resp
+
+
+@router.get("/login/2fa", response_class=HTMLResponse)
+def login_2fa_page(request: Request, next: str = "/", s: Session = Depends(get_session)):
+    u, _ = auth.read_pending(s, request.cookies.get(auth.PENDING_COOKIE, ""))
+    if u is None:
+        return _redirect(f"/login?next={quote(_safe_next(next))}", "Bitte erneut anmelden.")
+    return _page(request, "login_2fa.html", next=_safe_next(next))
+
+
+@router.post("/login/2fa")
+async def login_2fa(request: Request, s: Session = Depends(get_session)):
+    form = await request.form()
+    nxt = _safe_next(str(form.get("next", "/")))
+    u, remember = auth.read_pending(s, request.cookies.get(auth.PENDING_COOKIE, ""))
+    if u is None:
+        return _redirect(f"/login?next={quote(nxt)}", "Zeit abgelaufen – bitte erneut anmelden.")
+    ip = request.client.host if request.client else "?"
+    keys = (f"ip:{ip}", f"user:{u.id}")
+    if any(auth.totp_throttle.blocked(k) for k in keys):
+        return _redirect(f"/login/2fa?next={quote(nxt)}", "Zu viele Fehlversuche – bitte in einigen Minuten erneut versuchen.")
+    how = auth.check_second_factor(s, u, str(form.get("code", "")))
+    if not how:
+        for k in keys:
+            auth.totp_throttle.hit(k)
+        return _redirect(f"/login/2fa?next={quote(nxt)}", "Code falsch oder abgelaufen.")
+    for k in keys:
+        auth.totp_throttle.clear(k)
+    resp = _finish_login(request, s, u, remember, nxt, nxt != "/")
+    if how == "recovery":
+        left = len(u.totp_recovery or [])
+        resp.headers["location"] = _redirect(resp.headers["location"],
+                                             f"Mit Wiederherstellungscode angemeldet – noch {left} übrig. "
+                                             "Unter „Mein Konto“ neue Codes erzeugen.").headers["location"]
     return resp
 
 
@@ -252,6 +298,104 @@ async def account_save(request: Request, s: Session = Depends(get_session)):
     return resp
 
 
+# --------------------------------------------------------------------------- Zwei-Faktor-Anmeldung einrichten
+def _me_user(request: Request, s: Session) -> Optional[User]:
+    me = current(request)
+    return s.get(User, me.id) if me is not None else None
+
+
+def _renew_cookie(resp: Response, request: Request, s: Session, u: User) -> None:
+    exp = auth.cookie_expiry(request.cookies.get(auth.COOKIE, "")) or 0
+    days = auth.REMEMBER_DAYS if exp - time.time() > 2 * 86400 else 0.5
+    _set_cookie(resp, request, auth.make_cookie(s, u, days), days)
+
+
+@router.get("/account/2fa", response_class=HTMLResponse)
+def twofa_page(request: Request, new: int = 0, s: Session = Depends(get_session)):
+    from . import secretbox, totp
+
+    u = _me_user(request, s)
+    if u is None:
+        return _redirect("/login")
+    ctx = {"u": u, "required": u.role in auth.ADMIN_ROLES and get_settings(s).get("totp_admins", "1") == "1"}
+    if not u.totp_enabled:
+        secret = auth.totp_secret(u)
+        if not secret or new:
+            secret = totp.new_secret()
+            u.totp_secret = secretbox.encrypt(secret)
+            s.commit()
+        brand = getattr(request.state, "brand", None)
+        link = totp.uri(secret, u.username, getattr(brand, "name", "") or "ImmoVerwaltung")
+        ctx.update(secret=" ".join(secret[i:i + 4] for i in range(0, len(secret), 4)), qr=totp.qr_svg(link), link=link)
+    return _page(request, "account_2fa.html", **ctx)
+
+
+@router.post("/account/2fa/enable")
+async def twofa_enable(request: Request, s: Session = Depends(get_session)):
+    from . import totp
+
+    u = _me_user(request, s)
+    if u is None:
+        return _redirect("/login")
+    form = await request.form()
+    used = totp.verify(auth.totp_secret(u), str(form.get("code", "")))
+    if used is None:
+        return _redirect("/account/2fa", "Code passt nicht – Uhrzeit am Handy prüfen und den aktuellen Code eingeben.")
+    codes, hashes = totp.new_recovery_codes()
+    u.totp_enabled, u.totp_last, u.totp_recovery = True, used, hashes
+    u.session_version = (u.session_version or 1) + 1  # andere Sitzungen abmelden
+    s.commit()
+    resp = _page(request, "account_2fa.html", u=u, codes=codes, just_enabled=True, required=False)
+    _renew_cookie(resp, request, s, u)
+    return resp
+
+
+@router.post("/account/2fa/recovery")
+async def twofa_recovery(request: Request, s: Session = Depends(get_session)):
+    from . import totp
+
+    u = _me_user(request, s)
+    if u is None or not u.totp_enabled:
+        return _redirect("/account/2fa")
+    form = await request.form()
+    if auth.check_second_factor(s, u, str(form.get("code", ""))) != "totp":
+        return _redirect("/account/2fa", "Code aus der App falsch.")
+    codes, u.totp_recovery = totp.new_recovery_codes()
+    s.commit()
+    return _page(request, "account_2fa.html", u=u, codes=codes, required=False)
+
+
+@router.post("/account/2fa/disable")
+async def twofa_disable(request: Request, s: Session = Depends(get_session)):
+    u = _me_user(request, s)
+    if u is None or not u.totp_enabled:
+        return _redirect("/account/2fa")
+    if u.role in auth.ADMIN_ROLES and get_settings(s).get("totp_admins", "1") == "1":
+        return _redirect("/account/2fa", "Für Verwalter ist die Zwei-Faktor-Anmeldung Pflicht. Neues Handy? → „Neu einrichten“.")
+    form = await request.form()
+    if not auth.check_second_factor(s, u, str(form.get("code", ""))):
+        return _redirect("/account/2fa", "Code falsch.")
+    u.totp_enabled, u.totp_secret, u.totp_recovery, u.totp_last = False, "", [], 0
+    s.commit()
+    return _redirect("/account", "Zwei-Faktor-Anmeldung ausgeschaltet.")
+
+
+@router.post("/account/2fa/renew")
+async def twofa_renew(request: Request, s: Session = Depends(get_session)):
+    """Neues Handy: mit aktuellem Code (oder Wiederherstellungscode) neu einrichten."""
+    u = _me_user(request, s)
+    if u is None or not u.totp_enabled:
+        return _redirect("/account/2fa")
+    form = await request.form()
+    if not auth.check_second_factor(s, u, str(form.get("code", ""))):
+        return _redirect("/account/2fa", "Code falsch.")
+    u.totp_enabled, u.totp_secret, u.totp_recovery, u.totp_last = False, "", [], 0
+    s.commit()
+    resp = _redirect("/account/2fa?new=1", "Jetzt den neuen QR-Code mit der App scannen.")
+    _renew_cookie(resp, request, s, u)
+    return resp
+
+
 # --------------------------------------------------------------------------- Benutzerverwaltung (Verwalter)
 @router.get("/admin/users", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def users_page(request: Request, s: Session = Depends(get_session)):
@@ -269,6 +413,8 @@ async def users_settings(request: Request, s: Session = Depends(get_session)):
     form = await request.form()
     if form.get("push_form"):  # Formular „Benachrichtigungen (global)“
         save_settings(s, {k: "1" if form.get(k) else "" for k in notify.EVENTS})
+    elif form.get("security_form"):
+        save_settings(s, {"totp_admins": "1" if form.get("totp_admins") else "0"})
     else:  # Formular „Mieterportal“
         save_settings(s, {"portal_auto_publish": "1" if form.get("portal_auto_publish") else "",
                           "tenant_app_name": branding.clean(str(form.get("tenant_app_name", ""))) or "Mein Zuhause",
@@ -373,6 +519,22 @@ def user_reset(request: Request, uid: int, s: Session = Depends(get_session)):
         return _redirect("/admin/users", f"Link zum Zurücksetzen an {u.email} verschickt")
     except Exception as e:  # noqa: BLE001
         return _redirect(f"/admin/users/{uid}", f"E-Mail fehlgeschlagen: {e}")
+
+
+@router.post("/admin/users/{uid}/2fa-reset", dependencies=[Depends(require_admin)])
+def user_2fa_reset(request: Request, uid: int, s: Session = Depends(get_session)):
+    """Super-Admin: Zwei-Faktor-Anmeldung eines Benutzers zurücksetzen (z. B. Handy verloren, keine Codes mehr)."""
+    u = s.get(User, uid)
+    if u is None:
+        raise HTTPException(404)
+    me = current(request)
+    if me is not None and me.id == uid:
+        return _redirect(f"/admin/users/{uid}", "Die eigene Zwei-Faktor-Anmeldung unter „Mein Konto“ ändern.")
+    u.totp_enabled, u.totp_secret, u.totp_recovery, u.totp_last = False, "", [], 0
+    u.session_version = (u.session_version or 1) + 1
+    s.commit()
+    return _redirect(f"/admin/users/{uid}", f"Zwei-Faktor-Anmeldung von „{u.username}“ zurückgesetzt – "
+                     "beim nächsten Login wird sie neu eingerichtet.")
 
 
 # --------------------------------------------------------------------------- Mieterportal

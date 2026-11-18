@@ -312,6 +312,15 @@ def _building(s: Session, bid) -> Building:
     return next((b for b in blds if b.id == bid), blds[0])
 
 
+def _fints_ibans(s: Session) -> set:
+    """IBANs, für die ein FinTS-Bankzugang besteht (nur Super-Admins sehen den Bankzugang)."""
+    if not scope.is_super():
+        return set()
+    from .db import BankAccess
+
+    return {a.get("iban") for acc in s.query(BankAccess) for a in (acc.accounts or [])}
+
+
 @router.get("/admin/reserves", response_class=HTMLResponse)
 def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 0, s: Session = Depends(get_session)):
     bld = _building(s, building)
@@ -361,7 +370,7 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
                  .order_by(Building.sort, Building.id).all(), items=items, total=round(sum(i.amount for i in items), 2),
                  positions=positions(s, bld), names=names, plans=plans(s, bld), intervals=INTERVALS, balances=bal, entries=entries, exports=exports,
                  exec_date=default_exec_date(items), problems=problems, formats=sepa.FORMATS, kinds=KINDS,
-                 parties=parties, dl=dl, fmt_iban=sepa.format_iban, today=date.today())
+                 parties=parties, dl=dl, fmt_iban=sepa.format_iban, today=date.today(), fints=_fints_ibans(s))
 
 
 @router.post("/admin/reserves/accounts")
@@ -1368,7 +1377,16 @@ def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: 
     facts = [("Monat", f"{target:%m/%Y}", True), ("Ausführung", f"{ex.exec_date:%d.%m.%Y}", True),
              ("Überweisungen", str(ex.count), False), ("Summe", f"{_de(ex.total)} €", True),
              ("Datei", ex.filename, False)]
-    paragraphs = ["anbei der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für den kommenden Monat.",
+    fints_hint = ""
+    try:
+        from . import banking
+
+        if banking.access_for_iban(s, bld.account_iban) is not None:
+            fints_hint = (" Schneller: in der App unter Finanzen → Bankzugang (FinTS) „Terminiert einreichen“ und per "
+                          "pushTAN freigeben – dann wird der Auftrag automatisch als ausgeführt bestätigt.")
+    except Exception:  # noqa: BLE001
+        pass
+    paragraphs = ["anbei der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für den kommenden Monat." + fints_hint,
                   "Im Online-Banking des Hauptkontos unter „Datei-Übergabe“ hochladen, Summe und Ausführungsdatum prüfen "
                   "und freigeben. Nach der Ausführung in der App bestätigen – oder einfach den nächsten Kontoauszug "
                   "einlesen, dann wird die Datei automatisch als ausgeführt erkannt.",
@@ -1381,8 +1399,9 @@ def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: 
     html = mailer.render_html(title=f"Sammelauftrag Rücklagen {target:%m/%Y}", preheader=f"{_de(ex.total)} € am "
                               f"{ex.exec_date:%d.%m.%Y}", facts=facts, paragraphs=["Hallo,"] + paragraphs,
                               closing="Viele Grüße\nImmoVerwaltung",
-                              button_url=f"{base}/admin/reserves?building={bld.id}" if base else "",
-                              button_label="Zu den Rücklagen", footer=bld.label)
+                              button_url=(f"{base}/admin/bank#auftraege" if fints_hint else
+                                          f"{base}/admin/reserves?building={bld.id}") if base else "",
+                              button_label="Per FinTS einreichen" if fints_hint else "Zu den Rücklagen", footer=bld.label)
     text = "Hallo,\n\n" + "\n\n".join(paragraphs) + "\n\n" + "\n".join(f"{k}: {v}" for k, v, _ in facts)
     mailer.send_mail(to, f"SEPA-Sammelauftrag Rücklagen {target:%m/%Y}: {_de(ex.total)} € ({bld.label})", text,
                      [(ex.filename, ex.xml.encode("utf-8"), "application/xml")], html=html)

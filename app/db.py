@@ -104,6 +104,38 @@ class User(Base):
     reset_expires: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # Zwei-Faktor-Anmeldung (TOTP, Authenticator-App)
+    totp_secret: Mapped[str] = mapped_column(Text, default="")  # verschlüsselt (secretbox)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_last: Mapped[int] = mapped_column(Integer, default=0)  # zuletzt verwendeter Zeitschritt (keine Wiederverwendung)
+    totp_recovery: Mapped[list] = mapped_column(JSON, default=list)  # SHA-256 der Wiederherstellungscodes
+
+
+class BankAccess(Base):
+    """FinTS-Bankzugang (PIN/TAN): Umsatz- und Saldenabruf, Überweisungen mit TAN-Freigabe."""
+
+    __tablename__ = "bank_access"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    blz: Mapped[str] = mapped_column(String(8), default="")
+    server: Mapped[str] = mapped_column(String(255), default="")
+    login: Mapped[str] = mapped_column(String(100), default="")  # Anmeldename / Legitimations-ID
+    customer_id: Mapped[str] = mapped_column(String(100), default="")  # meist leer (= Anmeldename)
+    pin: Mapped[str] = mapped_column(Text, default="")  # verschlüsselt – nur wenn „PIN speichern“
+    tan_mechanism: Mapped[str] = mapped_column(String(10), default="")  # Sicherheitsfunktion, z. B. 923 = pushTAN
+    tan_medium: Mapped[str] = mapped_column(String(100), default="")
+    state: Mapped[str] = mapped_column(Text, default="")  # verschlüsselter Client-Zustand (BPD/UPD, System-ID)
+    accounts: Mapped[list] = mapped_column(JSON, default=list)  # Konten mit IBAN, Produkt, erlaubten Geschäftsvorfällen
+    mechanisms: Mapped[list] = mapped_column(JSON, default=list)  # angebotene TAN-Verfahren
+    auto_sync: Mapped[bool] = mapped_column(Boolean, default=False)
+    sync_hour: Mapped[int] = mapped_column(Integer, default=7)
+    sync_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)  # Umsätze ab (erster Abruf)
+    last_sync: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_auto: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    last_msg: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    log: Mapped[list] = mapped_column(JSON, default=list)  # letzte Vorgänge (Zeit, Text)
 
 
 class IgnoredInvoice(Base):
@@ -556,7 +588,9 @@ SETTING_DEFAULTS = {
     "admin_app_color": "#1e3a8a",  # Farbe der oberen Leiste (installierte App)
     "tenant_app_color": "#16a34a",
     # Finanzplanung (Hauptkonto)
-    "fin_iban": "",  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
+    "fin_iban": "",
+    "fints_product_id": "",  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
+    "totp_admins": "1",  # Verwalter müssen die Zwei-Faktor-Anmeldung einrichten  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
     "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)
     "fin_buffer": "100",  # Sicherheitspuffer in €
     "fin_seeded": "",

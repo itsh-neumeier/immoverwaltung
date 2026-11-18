@@ -55,6 +55,16 @@
   <button>Speichern</button>
 </form>
 <form method="post" action="/admin/users/settings" class="card">
+  <input type="hidden" name="security_form" value="1">
+  <h2 style="margin-top:0">🔐 Sicherheit</h2>
+  <div class="check"><input type="checkbox" name="totp_admins" id="totp_admins" {% if st.get('totp_admins', '1') == '1' %}checked{% endif %}>
+    <label for="totp_admins" style="margin:0">Zwei-Faktor-Anmeldung (Authenticator-App) für Verwalter und Super-Admins verpflichtend</label></div>
+  <p class="muted">Eingerichtet bei: {% for u in users if u.role != 'tenant' %}{{ u.username }} {{ "✓" if u.totp_enabled else "✗" }}{% if not loop.last %} · {% endif %}{% endfor %}.
+  Mit 2FA ist Basic-Auth für Skripte gesperrt – dafür API-Schlüssel verwenden.</p>
+  <button>Speichern</button>
+</form>
+
+<form method="post" action="/admin/users/settings" class="card">
   <input type="hidden" name="push_form" value="1">
   <h2 style="margin-top:0">🔔 Benachrichtigungen (global)</h2>
   <p class="muted">Gilt für alle Geräte, auf denen Benachrichtigungen aktiviert sind („Mein Konto“, Mieterportal oder Seite

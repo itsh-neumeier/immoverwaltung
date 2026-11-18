@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import accounts, api, auth, finance, reserves, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
+from . import accounts, api, auth, banking, finance, reserves, branding, scope, invoice_import, mailbox, mailer, notify, service, victron, vrm, wa_cloud, whatsapp
 from .config import config
 from .db import (Allocation, Billing, Building, FixedCost, IgnoredInvoice, Party, User, SessionLocal, get_session, get_settings,
                  init_db, save_settings)
@@ -39,6 +39,7 @@ async def reminder_loop() -> None:
                 await asyncio.to_thread(notify.waste_tick, s)
             with SessionLocal() as s:
                 await asyncio.to_thread(reserves.monthly_tick, s)
+            banking.auto_tick_background()
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(4 * 60)
@@ -50,6 +51,10 @@ async def lifespan(_app):
     with SessionLocal() as s:
         if name := auth.bootstrap(s):
             print(f"Login aktiv: Verwalter „{name}“ aus APP_USER/APP_PASSWORD angelegt.")
+        if (who := os.getenv("APP_2FA_RESET", "").strip()) and (u := auth.find_user(s, who)) is not None:
+            u.totp_enabled, u.totp_secret, u.totp_recovery, u.totp_last = False, "", [], 0  # Notfall (Handy weg)
+            s.commit()
+            print(f"Zwei-Faktor-Anmeldung von „{u.username}“ zurückgesetzt (APP_2FA_RESET) – Variable wieder entfernen!")
     tasks = []
     if mailbox.configured():
         tasks.append(asyncio.create_task(mailbox.poll_forever()))
@@ -67,6 +72,7 @@ app.include_router(accounts.router)
 app.include_router(api.router)
 app.include_router(reserves.router)
 app.include_router(finance.router)
+app.include_router(banking.router)
 
 
 # --------------------------------------------------------------------------- Helfer
@@ -90,6 +96,7 @@ def redirect(url: str, msg: str = "") -> RedirectResponse:
 
 PUBLIC = ("/login", "/logout", "/setup", "/password/", "/static/", "/healthz", "/favicon", "/apple-touch-icon",
           "/api/n8n/", "/api/whatsapp/", "/api/v1/", "/manifest.webmanifest", "/sw.js", "/offline", "/app")
+TOTP_FREE = ("/account/2fa", "/api/push/", "/manifest", "/sw.js")  # erreichbar, solange 2FA noch fehlt
 # frühere Adressen des Verwalterbereichs → /admin/… (Lesezeichen, Links in alten Mails)
 LEGACY_ADMIN = ("/billings", "/costs", "/mailbox", "/messages", "/parties", "/settings", "/users", "/victron", "/vrm",
                 "/waste", "/whatsapp")
@@ -139,6 +146,14 @@ async def authenticate(request: Request, call_next):
             return JSONResponse({"detail": "Anmeldung erforderlich"}, status_code=401)
         nxt = path + (f"?{request.url.query}" if request.url.query else "")
         return RedirectResponse("/login" + ("" if nxt == "/" else f"?next={quote(nxt)}"), status_code=303)
+    if user.is_admin and not path.startswith(TOTP_FREE):
+        with SessionLocal() as s:
+            must = auth.totp_required(s, user)
+        if must:  # Verwalter: erst Zwei-Faktor-Anmeldung einrichten
+            if request.method == "GET" and not path.startswith("/api/"):
+                return RedirectResponse("/account/2fa?msg=" + quote("Bitte zuerst die Zwei-Faktor-Anmeldung "
+                                        "einrichten (Pflicht für Verwalter)."), status_code=303)
+            return Response("Zwei-Faktor-Anmeldung einrichten (/account/2fa)", status_code=403)
     if _is_admin_path(path) and not user.is_admin:
         if request.method == "GET" and not path.startswith("/api/"):
             return RedirectResponse("/", status_code=303)

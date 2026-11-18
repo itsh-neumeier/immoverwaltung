@@ -8,3 +8,5 @@ python-multipart==0.0.32
 weasyprint==70.0
 pypdf==6.19.0
 cryptography==49.0.0
+fints==5.0.1
+qrcode==8.2

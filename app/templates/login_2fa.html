@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Bestätigungscode{% endblock %}
+{% block content %}
+<div class="auth-box">
+<img src="/static/favicon.svg" alt="" class="logo-big">
+<h1>Bestätigungscode</h1>
+<form method="post" action="/login/2fa" class="card">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label>6-stelliger Code aus der Authenticator-App</label>
+  <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 A-Za-z-]*" maxlength="14" required autofocus style="font-size:1.4rem;letter-spacing:.2em;text-align:center">
+  <button style="width:100%">Anmelden</button>
+  <p class="muted" style="margin-bottom:0">Handy nicht zur Hand? Einen der Wiederherstellungscodes (z. B. <code>ABCDE-FGH23</code>) eingeben.</p>
+  <div class="links"><a href="/login">Zurück</a></div>
+</form>
+</div>
+{% endblock %}

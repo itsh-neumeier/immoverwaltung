@@ -315,6 +315,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
       <form method="post" action="/admin/reserves/export/{{ ex.id }}/confirm" style="display:inline" onsubmit="return confirm('Bestätigung zurücknehmen?')"><input type="hidden" name="undo" value="1"><button class="sec">zurücknehmen</button></form>
     {% else %}
       <span class="badge" style="background:#fef3c7;color:#92400e">⏳ wartet auf Ausführung</span>
+      {% set debtor_iban = (bld.account_iban if ex.kind == 'in' else bld.reserve_iban)|replace(' ', '')|upper %}
+      {% if debtor_iban in fints %}<a class="btn" href="/admin/bank#auftraege" style="margin-top:4px">🏦 Per FinTS einreichen</a>{% endif %}
       <form method="post" action="/admin/reserves/export/{{ ex.id }}/confirm" style="display:flex;gap:6px;align-items:center;margin-top:4px">
         <input type="date" name="executed_on" value="{{ (ex.exec_date or today).isoformat() }}" style="width:auto" aria-label="ausgeführt am">
         <button>✓ Ausgeführt</button></form>

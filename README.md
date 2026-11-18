@@ -197,6 +197,12 @@ Basic-Auth erreichbar, aber durch Token, Signatur bzw. signierte Links geschütz
 - Sicherheit: Passwörter PBKDF2-SHA256 (600 000 Runden), signierte HttpOnly-Cookies (SameSite=Lax, „dauerhaft angemeldet
   bleiben“ – 400 Tage, bei jeder Nutzung automatisch verlängert), Sperre nach 5 Fehlversuchen, Passwortänderung meldet andere Sitzungen ab. Optional `APP_SECRET_KEY` als
   fester Cookie-Schlüssel (sonst automatisch erzeugt und in der Datenbank gespeichert).
+- **Zwei-Faktor-Anmeldung (TOTP):** Unter „Mein Konto → Zwei-Faktor-Anmeldung“ mit einer Authenticator-App einrichten
+  (QR-Code, 6-stellige Codes, 10 Wiederherstellungscodes). Für Verwalter und Super-Admins ist das **Pflicht**
+  (Benutzer → Sicherheit, abschaltbar): Ohne eingerichtete 2FA führt jede Verwalterseite zur Einrichtung. Mit 2FA ist
+  Basic-Auth für Skripte gesperrt; dafür API-Schlüssel nutzen. Der Super-Admin kann die 2FA eines Benutzers zurücksetzen.
+  Notfall (eigenes Handy weg, keine Codes): `APP_2FA_RESET=<benutzername>` setzen, Container neu starten, danach die
+  Variable wieder leeren.
 
 ### Darstellung
 
@@ -298,6 +304,27 @@ Grundlage ist der Kontoauszug des Hauptkontos (CAMT/CSV). Derselbe Upload füllt
   mindestens 3 der letzten 4 Monate mit ähnlichem Betrag. Noch nicht gebuchte fließen in die Vorschau ein.
 - **Kategorien mit Regeln** (Empfängername, `zweck:…`, `iban:…`, `*` als Platzhalter). Umsätze lassen sich per Klick
   zuordnen; „als Regel merken“ übernimmt den Empfänger für künftige Umsätze.
+
+### Bankzugang per FinTS (nur Super-Admin)
+
+Direkte Verbindung zur Bank (FinTS 3.0, PIN/TAN, z. B. Sparkasse mit S-pushTAN), unter Finanzen → Bankzugang (FinTS).
+- **Voraussetzung:** eine FinTS-Produktregistrierung der Deutschen Kreditwirtschaft. Sie wird in der App eingetragen
+  oder per `FINTS_PRODUCT_ID` gesetzt und gehört nicht ins Repository. Neue Registrierungen spielen die Banken erst
+  nach einigen Tagen ein.
+- **Bankzugang:** BLZ, FinTS-Adresse, Anmeldename, PIN. Die PIN wird optional verschlüsselt gespeichert; das ist nötig
+  für den täglichen automatischen Abruf. Schlüssel: `APP_ENCRYPTION_KEY`, sonst die Datei `.secret.key` im Datenordner.
+- **Konten abrufen:** zeigt alle Konten mit Art/Produkt, Rolle in der App (Hauptkonto, Rücklagenkonto, Finanzplanung)
+  und den laut Bank erlaubten Geschäftsvorfällen, z. B. ob vom Sparkonto überwiesen werden darf.
+- **Umsätze & Salden abrufen:** camt-Umsätze wie beim Datei-Import für Finanzplanung und Rücklagen-Abgleich,
+  ohne Dubletten zu bereits hochgeladenen Auszügen. Optional täglich automatisch. Etwa alle 90 Tage verlangt die Bank
+  eine pushTAN-Freigabe; die Seite fragt den Status selbst ab.
+- **Aufträge einreichen:** offene SEPA-Aufträge der App (Sammelauftrag Rücklagen, Gutschriften, Überweisung vom
+  Sparkonto mit Kennung) mit TAN freigeben. Eine Zukunfts-Ausführung geht als Termin(sammel)überweisung, oder du wählst
+  „sofort ausführen“. Danach gilt der Auftrag in den Rücklagen automatisch als ausgeführt. Erlaubt die Bank keine
+  Sammelüberweisung, werden die Überweisungen einzeln eingereicht.
+- **Übertrag / Überweisung:** zwischen den eigenen Konten (z. B. Giro → Aktivsparen) oder an ein anderes Konto.
+- **Empfängerprüfung (VoP):** Bei Abweichung des Empfängernamens zeigt die App das Ergebnis der Bank; ausgeführt wird
+  nur nach ausdrücklicher Bestätigung.
 
 ### Webhook-API (n8n, Home Assistant)
 

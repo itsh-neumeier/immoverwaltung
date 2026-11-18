@@ -1,0 +1,34 @@
+{% set aid = acc.id if acc else 0 %}
+<form method="post" action="/admin/bank/access/{{ aid }}">
+  <div class="grid">
+    <div><label>Bezeichnung</label><input type="text" name="name" value="{{ acc.name if acc else 'Sparkasse' }}" maxlength="100"></div>
+    <div><label>Bankleitzahl</label><input type="text" name="blz" value="{{ acc.blz if acc else '' }}" inputmode="numeric" maxlength="8" required></div>
+    <div><label>FinTS-Adresse</label><input type="url" name="server" value="{{ acc.server if acc else '' }}" placeholder="https://banking-….s-fints-pt-….de/fints30" required></div>
+  </div>
+  <p class="muted">Die FinTS-Adresse (auch „HBCI-/FinTS-Server, PIN/TAN“) nennt die Bank in den Online-Banking-Hilfen bzw. auf Nachfrage.
+  Sparkassen nutzen das Schema <code>https://banking-&lt;Land&gt;&lt;Nr&gt;.s-fints-pt-&lt;Land&gt;.de/fints30</code> (z. B. Sachsen <code>banking-sn5.s-fints-pt-sn.de</code>) – die genaue Adresse bitte bei der eigenen Sparkasse prüfen.</p>
+  <div class="grid">
+    <div><label>Anmeldename / Legitimations-ID</label><input type="text" name="login" value="{{ acc.login if acc else '' }}" autocomplete="off" required></div>
+    <div><label>Kunden-ID (meist leer)</label><input type="text" name="customer_id" value="{{ acc.customer_id if acc else '' }}" autocomplete="off"></div>
+    <div><label>PIN {% if acc and acc.pin %}(gespeichert ✓ – leer = unverändert){% endif %}</label><input type="password" name="pin" autocomplete="new-password"></div>
+  </div>
+  <div class="check"><input type="checkbox" name="store_pin" id="sp{{ aid }}" {% if acc and acc.pin %}checked{% endif %}><label for="sp{{ aid }}" style="margin:0">PIN verschlüsselt speichern (nötig für den automatischen Abruf; sonst bei jedem Vorgang eingeben)</label></div>
+  {% if acc and acc.pin %}<div class="check"><input type="checkbox" name="forget_pin" id="fp{{ aid }}"><label for="fp{{ aid }}" style="margin:0">gespeicherte PIN löschen</label></div>{% endif %}
+  {% if acc and acc.mechanisms %}
+  <div class="grid">
+    <div><label>TAN-Verfahren</label><select name="tan_mechanism">
+      {% for m in acc.mechanisms %}<option value="{{ m.id }}" {% if m.id == acc.tan_mechanism %}selected{% endif %}>{{ m.name }} ({{ m.id }})</option>{% endfor %}
+    </select></div>
+    <div><label>TAN-Medium (z. B. Gerätename, meist automatisch)</label><input type="text" name="tan_medium" value="{{ acc.tan_medium or '' }}"></div>
+  </div>
+  {% endif %}
+  <div class="grid">
+    <div class="check"><input type="checkbox" name="auto_sync" id="as{{ aid }}" {% if acc and acc.auto_sync %}checked{% endif %}><label for="as{{ aid }}" style="margin:0">Umsätze täglich automatisch abrufen</label></div>
+    <div><label>ab Uhrzeit</label><input type="number" name="sync_hour" min="0" max="23" value="{{ acc.sync_hour if acc else 7 }}" style="max-width:6rem"></div>
+    <div><label>Erster Abruf ab (leer = 90 Tage)</label><input type="date" name="sync_from" value="{{ acc.sync_from.isoformat() if acc and acc.sync_from else '' }}"></div>
+  </div>
+  <p class="muted">Etwa alle 90 Tage verlangt die Bank für den Umsatzabruf eine pushTAN-Freigabe – der automatische Abruf wartet dann bis zu 4 Minuten auf die Freigabe und meldet sich sonst per Push.</p>
+  <button>Speichern</button>
+  <button class="sec" name="connect" value="1">Speichern &amp; verbinden</button>
+  {% if acc %}<button class="danger" name="delete" value="1" formnovalidate onclick="return confirm('Bankzugang löschen? Gespeicherte PIN wird entfernt.')">Löschen</button>{% endif %}
+</form>

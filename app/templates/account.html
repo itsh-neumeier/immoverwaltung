@@ -13,6 +13,12 @@
   <button>Speichern</button>
   <p class="muted">Nach einer Passwortänderung werden alle anderen Sitzungen abgemeldet.</p>
 </form>
+<div class="card" style="max-width:560px">
+  <h2 style="margin-top:0">Zwei-Faktor-Anmeldung</h2>
+  {% if u.totp_enabled %}<p>✅ Eingerichtet – beim Anmelden wird zusätzlich der Code aus der Authenticator-App abgefragt. Noch {{ (u.totp_recovery or [])|length }} Wiederherstellungscodes.</p>
+  {% else %}<p class="muted">Schützt das Konto zusätzlich mit einem 6-stelligen Code aus einer Authenticator-App (z. B. Google/Microsoft Authenticator, Aegis, 2FAS).</p>{% endif %}
+  <a class="btn sec" href="/account/2fa">{{ "Verwalten" if u.totp_enabled else "Einrichten" }}</a>
+</div>
 {% set me_ = request.state.user %}
 {% with push_text = ("Benachrichtigung auf diesem Gerät, bei neuen Abrechnungen und Mitteilungen der Hausverwaltung (z. B. geplante Wasserabschaltung)." if me_ and not me_.is_admin else "Benachrichtigung auf diesem Gerät, sobald eine neue Stromrechnung eingegangen ist.") %}{% include "_push.html" %}{% endwith %}
 {% endblock %}

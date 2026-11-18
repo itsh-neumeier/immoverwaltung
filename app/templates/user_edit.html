@@ -35,6 +35,8 @@
   {% if uid %}
   <button class="sec" formaction="/admin/users/{{ uid }}/reset" {% if not (u.email and mail_ok) %}disabled{% endif %}>Link „Passwort zurücksetzen“ senden</button>
   <button class="danger" name="delete" value="1" onclick="return confirm('Benutzer löschen?')">Löschen</button>
+  {% if u.totp_enabled %}<button class="sec" formaction="/admin/users/{{ uid }}/2fa-reset" onclick="return confirm('Zwei-Faktor-Anmeldung zurücksetzen? Der Benutzer richtet sie beim nächsten Login neu ein.')">2FA zurücksetzen</button>{% endif %}
+  <p class="muted">Zwei-Faktor-Anmeldung: {{ "eingerichtet ✓" if u.totp_enabled else "nicht eingerichtet" }}</p>
   {% endif %}
 </form>
 <script>

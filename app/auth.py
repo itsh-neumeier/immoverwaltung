@@ -39,6 +39,7 @@ class CurrentUser:
     role: str
     party_id: Optional[int]
     building_ids: tuple = ()
+    totp: bool = False  # Zwei-Faktor-Anmeldung eingerichtet
 
     @property
     def is_admin(self) -> bool:
@@ -60,7 +61,7 @@ class CurrentUser:
 
 def snapshot(u: User) -> CurrentUser:
     return CurrentUser(u.id, u.username, u.name or "", u.email or "", u.role, u.party_id,
-                       tuple(int(x) for x in (u.building_ids or [])))
+                       tuple(int(x) for x in (u.building_ids or [])), bool(u.totp_enabled))
 
 
 # --------------------------------------------------------------------------- Passwörter
@@ -156,8 +157,8 @@ def user_from_basic(s: Session, header: str) -> Optional[User]:
     except Exception:  # noqa: BLE001
         return None
     u = find_user(s, name)
-    if u and u.active and u.role in ADMIN_ROLES and verify_password(pw, u.password_hash):
-        return u
+    if u and u.active and u.role in ADMIN_ROLES and not u.totp_enabled and verify_password(pw, u.password_hash):
+        return u  # mit Zwei-Faktor-Anmeldung kein Basic-Auth (Skripte: API-Schlüssel verwenden)
     return None
 
 
@@ -184,6 +185,62 @@ def bootstrap(s: Session) -> Optional[str]:
     s.add(u)
     s.commit()
     return u.username
+
+
+# --------------------------------------------------------------------------- Zwei-Faktor-Anmeldung (TOTP)
+PENDING_COOKIE = "nk_2fa"
+PENDING_MINUTES = 5
+
+
+def make_pending(s: Session, u: User, remember: bool) -> str:
+    """Zwischenschritt nach richtigem Passwort: nur für die Code-Eingabe gültig (5 Minuten)."""
+    msg = f"2fa.{u.id}.{int(time.time() + PENDING_MINUTES * 60)}.{u.session_version or 1}.{1 if remember else 0}"
+    return base64.urlsafe_b64encode(f"{msg}.{_sign(_secret(s), msg)}".encode()).decode()
+
+
+def read_pending(s: Session, value: str) -> tuple[Optional[User], bool]:
+    try:
+        tag, uid, exp, ver, rem, sig = base64.urlsafe_b64decode(value.encode()).decode().split(".")
+        msg = f"{tag}.{uid}.{exp}.{ver}.{rem}"
+        if tag != "2fa" or not hmac.compare_digest(_sign(_secret(s), msg), sig) or int(exp) < time.time():
+            return None, False
+        u = s.get(User, int(uid))
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None, False
+    if u is None or not u.active or int(ver) != (u.session_version or 1):
+        return None, False
+    return u, rem == "1"
+
+
+def totp_secret(u: User) -> str:
+    from . import secretbox
+
+    return secretbox.maybe_decrypt(u.totp_secret or "") or ""
+
+
+def check_second_factor(s: Session, u: User, code: str) -> str:
+    """Code aus der App oder Wiederherstellungscode prüfen → "totp" | "recovery" | "" (falsch)."""
+    from . import totp
+
+    used = totp.verify(totp_secret(u), code, u.totp_last or 0)
+    if used is not None:
+        u.totp_last = used
+        s.commit()
+        return "totp"
+    rest = totp.use_recovery(code, list(u.totp_recovery or []))
+    if rest is not None:
+        u.totp_recovery = rest
+        s.commit()
+        return "recovery"
+    return ""
+
+
+def totp_required(s: Session, u: CurrentUser) -> bool:
+    """Verwalter ohne eingerichtete Zwei-Faktor-Anmeldung, obwohl sie Pflicht ist."""
+    return u.is_admin and not u.totp and get_settings(s).get("totp_admins", "1") == "1"
+
+
+totp_throttle = None  # wird unten gesetzt (nach Throttle)
 
 
 # --------------------------------------------------------------------------- Passwort zurücksetzen
@@ -228,3 +285,4 @@ class Throttle:
 
 login_throttle = Throttle(limit=5, window=300)
 reset_throttle = Throttle(limit=3, window=900)
+totp_throttle = Throttle(limit=5, window=300)
