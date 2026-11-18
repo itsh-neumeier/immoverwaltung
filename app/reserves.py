@@ -110,12 +110,17 @@ def plans(s: Session, building: Optional[Building] = None, active_only: bool = F
     return q.order_by(ReservePlan.name, ReservePlan.id).all()
 
 
+def _cost_q(s: Session, model, building: Optional[Building]):
+    from .service import for_building
+    return for_building(s.query(model), model, building.id if building is not None else None)
+
+
 def positions(s: Session, building: Optional[Building] = None) -> dict[str, Position]:
     out = {}
-    for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)).order_by(FixedCost.id):
+    for f in _cost_q(s, FixedCost, building).filter(FixedCost.reserve.is_(True)).order_by(FixedCost.id):
         out[f"fc:{f.id}"] = Position(f"fc:{f.id}", f.name, (f.reserve_label or f.name).upper(),
                                      keyword_groups(f.reserve_label, f.name))
-    for a in s.query(Allocation).filter(Allocation.reserve.is_(True)).order_by(Allocation.id):
+    for a in _cost_q(s, Allocation, building).filter(Allocation.reserve.is_(True)).order_by(Allocation.id):
         out[f"al:{a.id}"] = Position(f"al:{a.id}", a.name, (a.reserve_label or a.name).upper(),
                                      keyword_groups(a.reserve_label, a.name))
     for p in plans(s, building, active_only=True) if building is not None else []:
@@ -201,7 +206,7 @@ def pending(s: Session, building: Building) -> list[Item]:
 
 
 def billing_pending(s: Session, building: Building) -> list[Item]:
-    pos = positions(s)
+    pos = {k: v for k, v in positions(s, building).items() if not k.startswith("rp:")}  # Positionen dieses Gebäudes
     if not pos:
         return []
     q = s.query(Billing).filter(Billing.status == "final", Billing.building_id == building.id)
@@ -1096,11 +1101,11 @@ def _payee_sources(s: Session, bld: Building) -> list[tuple]:
         if p.funding != "manuell" and p.payee_rules.strip() and ref in pos:  # geschützte Töpfe nie erstatten
             out.append((ref, pos[ref], parse_payee(p.payee_rules), _since(s, bld, ref, _month(p.start)),
                         p.category == "privat"))
-    for f in s.query(FixedCost).filter(FixedCost.reserve.is_(True)):
+    for f in _cost_q(s, FixedCost, bld).filter(FixedCost.reserve.is_(True)):
         if (f.payee_rules or "").strip():
             out.append((f"fc:{f.id}", pos.get(f"fc:{f.id}"), parse_payee(f.payee_rules),
                         _since(s, bld, f"fc:{f.id}", _start(bld)), False))
-    for a in s.query(Allocation).filter(Allocation.reserve.is_(True)):
+    for a in _cost_q(s, Allocation, bld).filter(Allocation.reserve.is_(True)):
         if (a.payee_rules or "").strip():
             out.append((f"al:{a.id}", pos.get(f"al:{a.id}"), parse_payee(a.payee_rules),
                         _since(s, bld, f"al:{a.id}", _start(bld)), False))

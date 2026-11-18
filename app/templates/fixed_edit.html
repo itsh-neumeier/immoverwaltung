@@ -2,6 +2,11 @@
 {% block content %}
 <h1>{{ "Neue Fixkosten" if cid == 0 else c.name }}</h1>
 <form method="post" class="card">
+  {% if buildings|length > 1 %}
+  <label>Gebäude</label>
+  <select name="building_id">{% for bd in buildings %}<option value="{{ bd.id }}" {% if bd.id == bid %}selected{% endif %}>{{ bd.label }}</option>{% endfor %}</select>
+  <p class="muted" style="margin-top:4px">Nach dem Wechsel des Gebäudes speichern – danach stehen die Parteien des neuen Gebäudes zur Auswahl.</p>
+  {% elif bid %}<input type="hidden" name="building_id" value="{{ bid }}">{% endif %}
   <div class="grid">
     <div><label>Bezeichnung</label><input type="text" name="name" value="{{ c.name }}" required placeholder="IPTV-Bereitstellung"></div>
     <div><label>Betrag je Abrechnung (€, intern – ohne MwSt.)</label><input type="text" name="amount_gross" value="{{ c.amount_gross|num(2) }}"></div>
@@ -25,4 +30,8 @@
   <button>Speichern</button>
   {% if cid %}<button class="danger" name="delete" value="1" onclick="return confirm('Löschen?')">Löschen</button>{% endif %}
 </form>
+{% if preview %}
+<h2>Vorschau nach Parteien</h2>
+{% set only_ref = ref %}{% include "_cost_preview.html" %}
+{% endif %}
 {% endblock %}

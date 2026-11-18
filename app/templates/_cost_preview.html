@@ -1,0 +1,24 @@
+{# Vorschau Fixkosten & Umlagen je Partei; optional nur eine Position (only_ref) #}
+{% set pv = preview %}
+{% if pv %}
+<div class="card">
+  <p class="muted" style="margin-top:0">So würde die nächste Abrechnung mit den aktuellen Einstellungen aussehen – Grundlage: {{ pv.basis }}.
+  Nur Fixkosten &amp; Umlagen (ohne Strom). Wird nicht gespeichert.</p>
+  {% for w in pv.warnings %}<div class="warn" style="margin-bottom:8px">{{ w }}</div>{% endfor %}
+  {% set rows = pv.rows|selectattr('ref', 'equalto', only_ref)|list if only_ref else pv.rows %}
+  {% if rows %}
+  <div class="scroll"><table class="preview">
+    <tr><th>Position</th>{% for p in pv.parties %}<th class="r">{{ p.name }}{% if p.unit_id %}<br><span class="muted" style="font-weight:400">{{ p.unit_id }}</span>{% endif %}{% if p.area %}<br><span class="muted" style="font-weight:400">{{ p.area|num(2) }} m²</span>{% endif %}</th>{% endfor %}<th class="r">Summe</th></tr>
+    {% for r in rows %}<tr>
+      <td><b>{{ r.name }}</b><br><span class="muted" style="font-size:12px">{{ 'Fixkosten' if r.group == 'fix' else 'Umlage' }}</span></td>
+      {% for p in pv.parties %}{% set amt = r.amounts.get(p.id) %}
+      <td class="r" title="{{ r.notes.get(p.id, '') }}">{{ amt|eur if amt is not none else '–' }}
+        {% if amt is not none and r.notes.get(p.id) %}<br><span class="muted" style="font-size:11px">{{ r.notes.get(p.id)|truncate(70) }}</span>{% endif %}</td>
+      {% endfor %}
+      <td class="r"><b>{{ r.total|eur }}</b></td>
+    </tr>{% endfor %}
+    {% if not only_ref %}<tr><td><b>Summe je Partei</b></td>{% for p in pv.parties %}<td class="r"><b>{{ pv.totals.get(p.id, 0)|eur }}</b></td>{% endfor %}<td class="r"><b>{{ pv.total|eur }}</b></td></tr>{% endif %}
+  </table></div>
+  {% else %}<p class="muted">Keine Beträge – Position ist inaktiv, gehört zu keinem Gebäude mit Parteien oder ergibt 0 €.</p>{% endif %}
+</div>
+{% endif %}

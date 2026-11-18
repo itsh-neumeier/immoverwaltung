@@ -1,10 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Fixkosten &amp; Umlagen</h1>
+{% if buildings|length > 1 %}
+<form method="get" class="card"><label>Gebäude</label>
+  <select name="building" onchange="this.form.submit()">{% for b in buildings %}<option value="{{ b.id }}" {% if b.id == bid %}selected{% endif %}>{{ b.label }}</option>{% endfor %}</select>
+</form>
+{% endif %}
 <p class="muted">Die Fixkosten des Stromanbieters (Grundpreis, Messstellenbetrieb) werden je Rechnung erfasst und automatisch gleichmäßig auf alle Parteien verteilt. Hier legst du <b>zusätzliche</b> Kosten an.</p>
 
 <h2>Weitere Fixkosten (je Abrechnung)</h2>
-<a class="btn" href="/admin/costs/fixed/0">+ Fixkosten anlegen</a>
+<a class="btn" href="/admin/costs/fixed/0?building={{ bid or '' }}">+ Fixkosten anlegen</a>
 <div class="card scroll" style="margin-top:12px"><table>
 <tr><th>Bezeichnung</th><th class="r">Betrag</th><th>Verteilt auf</th><th>Status</th></tr>
 {% for c in costs %}
@@ -15,7 +20,7 @@
 </table></div>
 
 <h2>Umlagen nach Verbrauch</h2>
-<a class="btn" href="/admin/costs/alloc/0">+ Umlage anlegen</a>
+<a class="btn" href="/admin/costs/alloc/0?building={{ bid or '' }}">+ Umlage anlegen</a>
 <div class="card scroll" style="margin-top:12px"><table>
 <tr><th>Bezeichnung</th><th>Kostenquelle</th><th>Verteilschlüssel</th><th>Status</th></tr>
 {% for a in allocations %}
@@ -28,4 +33,7 @@
 <td>{{ "aktiv" if a.active else "inaktiv" }}{% if a.reserve %} · <a href="/admin/reserves">🏦 Rücklage</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="4" class="muted">z. B. „Trinkwasser“ (m³ aus HA × Preis je m³, nach Prozent) oder „Warmwasserbereitung“ (kWh des Shelly zum Hausstrom-Mix, nach Prozent)</td></tr>{% endfor %}
 </table></div>
+
+<h2 id="vorschau">Vorschau nach Parteien</h2>
+{% include "_cost_preview.html" %}
 {% endblock %}

@@ -799,21 +799,33 @@ async def party_save(request: Request, pid: int, s: Session = Depends(get_sessio
 
 # --------------------------------------------------------------------------- Fixkosten
 @app.get("/admin/costs", response_class=HTMLResponse)
-def costs_page(request: Request, s: Session = Depends(get_session)):
+def costs_page(request: Request, building: int = 0, s: Session = Depends(get_session)):
+    bid = _pick_building(s, building)
     return render(
         request, "costs.html",
-        costs=s.query(FixedCost).order_by(FixedCost.id).all(),
-        allocations=s.query(Allocation).order_by(Allocation.id).all(),
+        costs=service.for_building(s.query(FixedCost), FixedCost, bid).order_by(FixedCost.id).all(),
+        allocations=service.for_building(s.query(Allocation), Allocation, bid).order_by(Allocation.id).all(),
         parties={p.id: p.name for p in s.query(Party).all()},
+        buildings=_buildings(s), bid=bid, preview=service.preview_costs(s, bid),
     )
 
 
+def _cost_building(s: Session, obj, form_value=None) -> Optional[int]:
+    """Gebäude einer Fixkosten-/Umlage-Position prüfen bzw. aus dem Formular setzen (nur erlaubte Gebäude)."""
+    if obj.id and obj.building_id is not None and not scope.can(obj.building_id):
+        raise HTTPException(404)
+    return _pick_building(s, form_value if form_value is not None else obj.building_id)
+
+
 @app.get("/admin/costs/fixed/{cid}", response_class=HTMLResponse)
-def fixed_edit(request: Request, cid: int, s: Session = Depends(get_session)):
+def fixed_edit(request: Request, cid: int, building: int = 0, s: Session = Depends(get_session)):
     c = FixedCost(name="", amount_gross=0.0, party_ids=[], active=True) if cid == 0 else s.get(FixedCost, cid)
     if c is None:
         raise HTTPException(404)
-    return render(request, "fixed_edit.html", c=c, cid=cid, parties=service.active_parties(s))
+    bid = _cost_building(s, c, building or None)
+    preview = service.preview_costs(s, bid) if cid else None
+    return render(request, "fixed_edit.html", c=c, cid=cid, parties=service.active_parties(s, bid), buildings=_buildings(s),
+                  bid=bid, preview=preview, ref=f"fc:{cid}")
 
 
 @app.post("/admin/costs/fixed/{cid}")
@@ -821,13 +833,14 @@ async def fixed_save(request: Request, cid: int, s: Session = Depends(get_sessio
     form = await request.form()
     if form.get("delete"):
         c = s.get(FixedCost, cid)
-        if c:
+        if c and (c.building_id is None or scope.can(c.building_id)):
             s.delete(c)
             s.commit()
         return redirect("/admin/costs", "Gelöscht")
     c = FixedCost() if cid == 0 else s.get(FixedCost, cid)
     if c is None:
         raise HTTPException(404)
+    c.building_id = _cost_building(s, c, form.get("building_id"))
     c.name = str(form.get("name", "")).strip()
     c.amount_gross = parse_float(form.get("amount_gross")) or 0.0
     c.party_ids = [int(x) for x in form.getlist("party_ids")]
@@ -839,17 +852,20 @@ async def fixed_save(request: Request, cid: int, s: Session = Depends(get_sessio
     if cid == 0:
         s.add(c)
     s.commit()
-    return redirect("/admin/costs", "Gespeichert")
+    return redirect(f"/admin/costs?building={c.building_id or ''}", "Gespeichert")
 
 
 @app.get("/admin/costs/alloc/{aid}", response_class=HTMLResponse)
-def alloc_edit(request: Request, aid: int, s: Session = Depends(get_session)):
+def alloc_edit(request: Request, aid: int, building: int = 0, s: Session = Depends(get_session)):
     a = (Allocation(name="", source_type="energy", source_entity="", source_unit="m³", price_source="custom", default_amount=0.0,
                     key_type="percent", key_unit="", key={}, active=True)
          if aid == 0 else s.get(Allocation, aid))
     if a is None:
         raise HTTPException(404)
-    return render(request, "alloc_edit.html", a=a, aid=aid, parties=service.active_parties(s))
+    bid = _cost_building(s, a, building or None)
+    preview = service.preview_costs(s, bid) if aid else None
+    return render(request, "alloc_edit.html", a=a, aid=aid, parties=service.active_parties(s, bid), buildings=_buildings(s),
+                  bid=bid, preview=preview, ref=f"al:{aid}")
 
 
 @app.post("/admin/costs/alloc/{aid}")
@@ -857,13 +873,14 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
     form = await request.form()
     if form.get("delete"):
         a = s.get(Allocation, aid)
-        if a:
+        if a and (a.building_id is None or scope.can(a.building_id)):
             s.delete(a)
             s.commit()
         return redirect("/admin/costs", "Gelöscht")
     a = Allocation() if aid == 0 else s.get(Allocation, aid)
     if a is None:
         raise HTTPException(404)
+    a.building_id = _cost_building(s, a, form.get("building_id"))
     a.name = str(form.get("name", "")).strip()
     a.source_type = str(form.get("source_type", "energy"))
     a.source_entity = normalize_spec(str(form.get("source_entity", "")))
@@ -873,7 +890,7 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
     a.key_type = str(form.get("key_type", "entity"))
     a.key_unit = str(form.get("key_unit", "")).strip()
     key = {}
-    for p in service.active_parties(s):
+    for p in service.active_parties(s, a.building_id):
         if a.key_type == "percent":
             raw = str(form.get(f"keypct_{p.id}", form.get(f"key_{p.id}", ""))).strip()
             if raw:
@@ -893,7 +910,7 @@ async def alloc_save(request: Request, aid: int, s: Session = Depends(get_sessio
     if aid == 0:
         s.add(a)
     s.commit()
-    return redirect("/admin/costs", "Gespeichert")
+    return redirect(f"/admin/costs?building={a.building_id or ''}", "Gespeichert")
 
 
 # --------------------------------------------------------------------------- Abrechnungen

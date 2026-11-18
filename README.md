@@ -50,6 +50,14 @@ Restverbrauch (Gesamt − andere Parteien − Strom-Umlagen).
 | Sonstige Umlagen | fester Betrag; Verteilung auch nach Verbrauch je Partei (HA-Entität) oder gleichmäßig |
 
 
+### Fixkosten & Umlagen je Gebäude, Vorschau nach Parteien
+
+Jede Fixkosten- und Umlage-Position gehört zu einem Gebäude. Bestehende Positionen werden beim Update dem ersten
+Gebäude zugeordnet. Eine Abrechnung nimmt nur die Positionen ihres Gebäudes, und Verwalter sehen nur ihre Gebäude.
+Die **Vorschau nach Parteien** auf der Seite Fixkosten & Umlagen zeigt, was mit den aktuellen Einstellungen je Partei
+herauskommt. Grundlage sind die Verbrauchswerte und Beträge der letzten Abrechnung; gespeichert wird nichts. Auf der
+Bearbeiten-Seite einer Position zeigt die Vorschau nur diese Position.
+
 ### Umlage nach Wohnfläche (m²)
 
 Bei jeder Partei lässt sich die **Wohnfläche (m²)** hinterlegen. Es gibt zwei Wege, Kosten danach zu verteilen:

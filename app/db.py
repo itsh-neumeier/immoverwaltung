@@ -310,6 +310,7 @@ class FixedCost(Base):
 
     __tablename__ = "fixed_costs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
     amount_gross: Mapped[float] = mapped_column(Float, default=0.0)
     party_ids: Mapped[list] = mapped_column(JSON, default=list)  # leer = alle
@@ -325,6 +326,7 @@ class Allocation(Base):
 
     __tablename__ = "allocations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    building_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
     source_type: Mapped[str] = mapped_column(String(20), default="energy")  # energy | quantity | amount
     source_entity: Mapped[str] = mapped_column(String(255), default="")
@@ -434,6 +436,10 @@ def _migrate_multisite() -> None:
             s.query(Billing).filter(Billing.building_id.is_(None)).update({Billing.building_id: b.id})
         if s.query(User).filter(User.role == "superadmin").first() is None:
             s.query(User).filter(User.role == "admin").update({User.role: "superadmin"})
+        first = s.query(Building).order_by(Building.id).first()
+        if first is not None:  # Fixkosten/Umlagen ohne Gebäude → erstes Gebäude
+            s.query(FixedCost).filter(FixedCost.building_id.is_(None)).update({FixedCost.building_id: first.id})
+            s.query(Allocation).filter(Allocation.building_id.is_(None)).update({Allocation.building_id: first.id})
         s.commit()
 
 

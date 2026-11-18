@@ -2,6 +2,11 @@
 {% block content %}
 <h1>{{ "Neue Umlage" if aid == 0 else a.name }}</h1>
 <form method="post" class="card">
+  {% if buildings|length > 1 %}
+  <label>Gebäude</label>
+  <select name="building_id">{% for bd in buildings %}<option value="{{ bd.id }}" {% if bd.id == bid %}selected{% endif %}>{{ bd.label }}</option>{% endfor %}</select>
+  <p class="muted" style="margin-top:4px">Nach dem Wechsel des Gebäudes speichern – danach stehen die Parteien des neuen Gebäudes zur Auswahl.</p>
+  {% elif bid %}<input type="hidden" name="building_id" value="{{ bid }}">{% endif %}
   <label>Bezeichnung</label><input type="text" name="name" value="{{ a.name }}" required placeholder="Trinkwasser / Warmwasserbereitung">
   <label>Kostenquelle</label>
   <select name="source_type" id="src">
@@ -86,4 +91,8 @@
   update();
 })();
 </script>
+{% if preview %}
+<h2>Vorschau nach Parteien</h2>
+{% set only_ref = ref %}{% include "_cost_preview.html" %}
+{% endif %}
 {% endblock %}

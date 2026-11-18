@@ -137,7 +137,7 @@ def required_entities(s: Session, building_id: Optional[int] = None) -> list[tup
         meters = p.meters or []
         for i, m in enumerate(meters, start=1):
             out += _roles(m, f"Zähler {p.name}" + (f" #{i}" if len(meters) > 1 else ""))
-    for a in s.query(Allocation).filter(Allocation.active.is_(True)).all():
+    for a in for_building(s.query(Allocation).filter(Allocation.active.is_(True)), Allocation, building_id).all():
         if a.source_type in ("energy", "quantity") and a.source_entity:
             out += _roles(a.source_entity, f"Umlage {a.name} (Quelle)")
         if a.key_type == "entity":
@@ -244,6 +244,14 @@ def fetch_message(missing: dict[str, str]) -> str:
     return "Werte geladen – fehlend: " + "; ".join(f"{e} ({why})" for e, why in missing.items())
 
 
+def for_building(q, model, building_id: Optional[int]):
+    """Fixkosten/Umlagen eines Gebäudes (ohne Gebäude = für alle)."""
+    if building_id is None:
+        return q
+    from sqlalchemy import or_
+    return q.filter(or_(model.building_id == building_id, model.building_id.is_(None)))
+
+
 def area_key(parties, selection: Optional[dict] = None) -> dict[int, float]:
     """Verteilschlüssel Wohnfläche: {Partei-ID: m²} für Parteien mit Fläche; ``selection`` (IDs aus der Umlage)
     schränkt ein, leer = alle Parteien mit Fläche."""
@@ -251,7 +259,7 @@ def area_key(parties, selection: Optional[dict] = None) -> dict[int, float]:
     return {p.id: float(p.area) for p in parties if (p.area or 0) > 0 and (not chosen or str(p.id) in chosen)}
 
 
-def recompute(s: Session, b: Billing) -> dict:
+def recompute(s: Session, b: Billing, daily: bool = True, store: bool = True) -> dict:
     st = get_settings(s)
     db_parties = active_parties(s, b.building_id)
     parties = [
@@ -262,11 +270,13 @@ def recompute(s: Session, b: Billing) -> dict:
     fixed = [
         calc.FixedCostCfg(name=f.name, amount_gross=f.amount_gross, party_ids=[int(x) for x in f.party_ids or []],
                           id=f.id, areas=area_key(db_parties) if f.split == "area" else {})
-        for f in s.query(FixedCost).filter(FixedCost.active.is_(True)).order_by(FixedCost.id).all()
+        for f in for_building(s.query(FixedCost).filter(FixedCost.active.is_(True)), FixedCost, b.building_id)
+        .order_by(FixedCost.id).all()
     ]
     allocs = []
     water_parts = water_price_parts(st)
-    for a in s.query(Allocation).filter(Allocation.active.is_(True)).order_by(Allocation.id).all():
+    for a in for_building(s.query(Allocation).filter(Allocation.active.is_(True)), Allocation, b.building_id) \
+            .order_by(Allocation.id).all():
         amount = (b.amounts or {}).get(str(a.id), a.default_amount)
         parts = water_parts if a.source_type == "quantity" and a.price_source == "water" else []
         allocs.append(
@@ -316,15 +326,61 @@ def recompute(s: Session, b: Billing) -> dict:
     extra = {p.id: p for p in db_parties}
     for rp in result["parties"]:
         rp["unit_id"] = extra[rp["id"]].unit_id or ""
-    result["daily"] = daily_report(s, b, st, db_parties, allocs)
+    result["daily"] = daily_report(s, b, st, db_parties, allocs) if daily else {}
     result["landlord"] = {
         k: st[k] for k in ("landlord_name", "landlord_address", "landlord_contact", "landlord_iban",
                            "payment_days", "invoice_text")
     }
     result["building"] = building_info(s, b, st)
     result["computed_at"] = datetime.now().isoformat(timespec="seconds")
-    b.result = result
+    if store:
+        b.result = result
     return result
+
+
+def preview_costs(s: Session, building_id: Optional[int]) -> dict:
+    """Vorschau Fixkosten & Umlagen je Partei: aktuelle Einstellungen, Verbrauchswerte und Beträge der letzten
+    Abrechnung des Gebäudes (ohne etwas zu speichern). Ohne Abrechnung: nur Fixkosten und feste Beträge."""
+    from datetime import date as _date
+
+    last = s.query(Billing).filter(Billing.building_id == building_id) \
+        .order_by(Billing.period_start.desc(), Billing.id.desc()).first() if building_id else None
+    if last is not None:
+        basis = f"Verbrauchswerte und Beträge der Abrechnung {last.period_start:%m/%Y}" + \
+            (" (abgeschlossen)" if last.status == "final" else " (Entwurf)")
+        b = last
+    else:
+        today = _date.today().replace(day=1)
+        b = Billing(building_id=building_id, period_start=today, period_end=today, grid_kwh=0.0, energy_cost_net=0.0,
+                    fixed_cost_net=0.0, vat_rate=0.19, battery_rate_ct=0.0, spot_price_ct=0.0, pv_rate_ct=0.0,
+                    values={}, values_meta={}, amounts={})
+        basis = "noch keine Abrechnung – verbrauchsabhängige Umlagen ohne Werte (0 €)"
+    try:
+        result = recompute(s, b, daily=False, store=False)
+    finally:
+        if last is None:
+            s.expunge(b) if b in s else None
+    parties = [{"id": p["id"], "name": p["name"], "unit_id": p.get("unit_id", ""), "is_owner": p.get("is_owner")}
+               for p in result["parties"]]
+    areas = {p.id: p.area for p in active_parties(s, building_id)}
+    rows: dict[str, dict] = {}
+    for p in result["parties"]:
+        for line in p["lines"]:
+            ref = line.get("ref") or ""
+            if not ref.startswith(("fc:", "al:")):
+                continue
+            r = rows.setdefault(ref, {"ref": ref, "name": line["label"], "group": line.get("group"), "amounts": {},
+                                      "notes": {}, "total": 0.0})
+            r["amounts"][p["id"]] = line["amount"]
+            r["notes"][p["id"]] = line.get("note", "")
+            r["total"] = round(r["total"] + line["amount"], 2)
+    ordered = sorted(rows.values(), key=lambda r: (r["group"] != "fix", r["ref"]))
+    totals = {p["id"]: round(sum(r["amounts"].get(p["id"], 0.0) for r in ordered), 2) for p in parties}
+    warnings = [w for w in result.get("warnings", []) if "Umlage" in w or "Fixkosten" in w]
+    for p in parties:
+        p["area"] = areas.get(p["id"]) or 0
+    return {"basis": basis, "parties": parties, "rows": ordered, "totals": totals,
+            "total": round(sum(totals.values()), 2), "warnings": warnings, "billing": last}
 
 
 # --------------------------------------------------------------------------- E-Mail
