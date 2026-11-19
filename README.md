@@ -334,6 +334,22 @@ Direkte Verbindung zur Bank (FinTS 3.0, PIN/TAN, z. B. Sparkasse mit S-pushTAN),
 - **Empfängerprüfung (VoP):** Bei Abweichung des Empfängernamens zeigt die App das Ergebnis der Bank; ausgeführt wird
   nur nach ausdrücklicher Bestätigung.
 
+### Kassenprüfung mit KI (nur Super-Admin)
+
+Unter Finanzen → Kassenprüfung (KI) prüft die App Rücklagen, Kontoabgleich, Konto/Spielraum und Budgets.
+- **Regelprüfung in der App:** Topf im Minus, Töpfe vs. Kontostand, zu wenig angesparte Töpfe, nicht zugeordnete
+  Umsätze, unbestätigte Aufträge, offene Gutschriften, überschrittene Budgets, drohendes Minus.
+- **Bewertung durch OpenAI** (optional, eigener API-Schlüssel, verschlüsselt gespeichert, Modell einstellbar,
+  Standard `gpt-5.6`): Die KI bewertet, ergänzt Auffälligkeiten (Ausreißer, Doppelzahlungen, neue Empfänger,
+  Preissteigerungen) und schlägt Maßnahmen vor. Die Antwort kommt als festes JSON-Schema zurück.
+- **Pseudonymisiert:** keine IBAN, Namen, Verwendungszwecke, Gebäude- oder Topfnamen. Töpfe, Empfänger, Konten und
+  Gebäude werden zu Zufallskennungen (neu je Prüfung), Topfnamen nur als allgemeine Art (z. B. „Versicherung“).
+  Beträge werden mit einem geheimen Faktor verzerrt, Zeitangaben sind relativ. Vor dem Versand prüft die App die
+  Anfrage auf echte Namen und IBANs und sendet im Zweifel nicht. Die Antwort wird lokal wieder den echten Töpfen
+  und Euro-Beträgen zugeordnet.
+- **Vorschau „Was geht raus?“** zeigt die genaue Anfrage. Berichte werden gespeichert, Befunde lassen sich abhaken.
+  Optional prüft die App einmal im Monat automatisch, mit Push-Nachricht.
+
 ### Webhook-API (n8n, Home Assistant)
 
 Menü **API** (nur Super-Admin): API-Schlüssel anlegen (optional auf Gebäude beschränkt, optional ohne Recht auf

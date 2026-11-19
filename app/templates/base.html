@@ -34,7 +34,7 @@
     <a href="{{ href }}" {% if (exact and p == href) or (not exact and p.startswith(href)) %}class="active" aria-current="page"{% endif %}>{{ label }}</a>
   {%- endmacro %}
   {% set in_immo = path == '/admin' or path.startswith(('/admin/billings', '/admin/parties', '/admin/costs', '/admin/buildings', '/admin/messages', '/admin/waste')) %}
-  {% set in_fin = path.startswith(('/admin/reserves', '/admin/finanzen', '/admin/bank')) %}
+  {% set in_fin = path.startswith(('/admin/reserves', '/admin/finanzen', '/admin/bank', '/admin/pruefung')) %}
   {% set in_sys = path.startswith(('/admin/settings', '/admin/users', '/admin/whatsapp', '/admin/api-keys', '/admin/mailbox', '/admin/vrm', '/admin/victron')) %}
   <details class="nav-group{{ ' active' if in_immo }}"><summary>🏠 Immobilie</summary><div class="nav-menu">
     {{ nav_link('/admin', 'Abrechnungen', true) }}
@@ -47,7 +47,8 @@
   <details class="nav-group{{ ' active' if in_fin }}"><summary>💶 Finanzen</summary><div class="nav-menu">
     {{ nav_link('/admin/reserves', 'Rücklagen & Sammelaufträge') }}
     {% if is_super_nav %}{{ nav_link('/admin/finanzen', 'Budget & Spielraum') }}
-    {{ nav_link('/admin/bank', 'Bankzugang (FinTS)') }}{% endif %}
+    {{ nav_link('/admin/bank', 'Bankzugang (FinTS)') }}
+    {{ nav_link('/admin/pruefung', 'Kassenprüfung (KI)') }}{% endif %}
   </div></details>
   {% if is_super_nav %}
   <details class="nav-group{{ ' active' if in_sys }}"><summary>⚙️ System</summary><div class="nav-menu">

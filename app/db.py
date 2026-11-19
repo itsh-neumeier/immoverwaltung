@@ -141,6 +141,23 @@ class BankAccess(Base):
     log: Mapped[list] = mapped_column(JSON, default=list)  # letzte Vorgänge (Zeit, Text)
 
 
+class AuditReport(Base):
+    """Kassenprüfung: Regelprüfung der App + (optional) Bewertung durch ein KI-Modell mit pseudonymisierten Daten."""
+
+    __tablename__ = "audit_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    model: Mapped[str] = mapped_column(String(60), default="")  # leer = nur Regelprüfung
+    status: Mapped[str] = mapped_column(String(10), default="ok")  # ok | error | blocked
+    verdict: Mapped[str] = mapped_column(String(20), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    findings: Mapped[list] = mapped_column(JSON, default=list)  # mit echten Namen/Beträgen (nur lokal)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)  # genau das, was gesendet wurde (pseudonymisiert)
+    error: Mapped[str] = mapped_column(Text, default="")
+    done: Mapped[list] = mapped_column(JSON, default=list)  # erledigte Befunde (Index)
+
+
 class IgnoredInvoice(Base):
     """Gelöschte Rechnung aus dem Postfach – wird beim Abruf nicht erneut importiert."""
 
@@ -594,7 +611,10 @@ SETTING_DEFAULTS = {
     "tenant_app_color": "#16a34a",
     # Finanzplanung (Hauptkonto)
     "fin_iban": "",
-    "fints_product_id": "",  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
+    "fints_product_id": "",
+    "openai_key": "",  # verschlüsselt (secretbox)
+    "openai_model": "",
+    "audit_monthly": "",  # Kassenprüfung einmal im Monat automatisch  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
     "totp_admins": "1",  # Verwalter müssen die Zwei-Faktor-Anmeldung einrichten  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
     "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)
     "fin_buffer": "100",  # Sicherheitspuffer in €

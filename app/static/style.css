@@ -262,3 +262,14 @@ button.small{padding:3px 8px;font-size:.85rem}
 @keyframes spin{to{transform:rotate(360deg)}}
 .refresh-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
 .refresh-bar button{margin:0}
+/* Kassenprüfung */
+.finding{border-left:4px solid var(--line,#ccc);padding:8px 12px;margin:10px 0;border-radius:6px;background:rgba(127,127,127,.05)}
+.finding.sev-hoch{border-left-color:var(--danger,#dc2626)}
+.finding.sev-mittel{border-left-color:#f59e0b}
+.finding.sev-niedrig{border-left-color:#64748b}
+.finding.done{opacity:.55}
+.finding.done b{text-decoration:line-through}
+.finding-head{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.finding-values{display:flex;flex-wrap:wrap;gap:14px;font-size:.92rem}
+.badge.ai{background:#ede9fe;color:#5b21b6}
+pre.payload{max-height:420px;overflow:auto;font-size:12px;background:rgba(127,127,127,.08);padding:10px;border-radius:8px}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Kassenprüfung{% endblock %}
+{% block content %}
+<h1>Kassenprüfung</h1>
+<p class="muted">Prüft Rücklagen, Kontoabgleich, Konto/Spielraum und Budgets: zuerst mit festen Regeln in der App, dann –
+mit hinterlegtem OpenAI-Schlüssel – Bewertung durch ein KI-Modell. An die KI gehen <b>nur pseudonymisierte Daten</b>:
+keine IBAN, keine Namen, keine Verwendungszwecke; Töpfe und Empfänger als Zufallskennungen, Beträge mit geheimem Faktor
+verzerrt, Zeitangaben relativ. Die Antwort wird in der App wieder den echten Töpfen und Beträgen zugeordnet.</p>
+
+<form method="post" action="/admin/pruefung/run" class="inline-actions" onsubmit="this.querySelector('button').disabled=true;this.querySelector('.spin').hidden=false">
+  <button>🔎 Prüfung starten{% if not has_key %} (nur Regeln){% endif %}</button>
+  {% if has_key %}<button class="sec" name="nur_regeln" value="1">nur Regelprüfung (ohne KI)</button>{% endif %}
+  <a class="btn sec" href="/admin/pruefung?show=vorschau#vorschau">Was geht raus? (Vorschau)</a>
+  <span class="spin muted" hidden><span class="spinner"></span> Prüfung läuft – das KI-Modell braucht bis zu einer Minute …</span>
+</form>
+
+{% if rep %}
+{% set v = verdicts.get(rep.verdict, ('', rep.verdict)) %}
+<div class="card" id="bericht">
+  <h2 style="margin-top:0">{{ v[0] }} {{ v[1] }} <span class="muted" style="font-size:.9rem">· Prüfung vom {{ rep.created_at.strftime('%d.%m.%Y %H:%M') }}{% if rep.created_by %} · {{ rep.created_by }}{% endif %} · {{ ('KI: ' ~ rep.model) if rep.model else 'nur Regelprüfung' }}</span></h2>
+  {% if rep.error %}<div class="warn">{{ rep.error }}</div>{% endif %}
+  {% if rep.summary %}<p>{{ rep.summary }}</p>{% endif %}
+  {% if not rep.findings %}<p>Keine Befunde – alles in Ordnung.</p>{% endif %}
+  {% for f in rep.findings %}{% set done = loop.index0 in (rep.done or []) %}
+  <div class="finding sev-{{ f.schwere }}{{ ' done' if done }}" id="b{{ loop.index0 }}">
+    <div class="finding-head">
+      <span class="badge sev">{{ f.schwere }}</span>
+      <span class="badge">{{ areas.get(f.bereich, f.bereich) }}</span>
+      <span class="badge {{ 'ai' if f.quelle == 'KI' else '' }}">{{ '🤖 KI' if f.quelle == 'KI' else '📏 Regel' }}</span>
+      <b>{{ f.titel }}</b>
+      <form method="post" action="/admin/pruefung/{{ rep.id }}/done" style="margin-left:auto"><input type="hidden" name="i" value="{{ loop.index0 }}">
+        <button class="sec small">{{ '↺ offen' if done else '✓ erledigt' }}</button></form>
+    </div>
+    {% if f.refs %}<div class="muted" style="font-size:.9rem">betrifft: {{ f.refs|join(', ') }}</div>{% endif %}
+    <p style="margin:.4em 0">{{ f.beschreibung }}</p>
+    {% if f.werte %}<div class="finding-values">{% for w in f.werte %}<span>{{ w.bezeichnung }}: <b {% if w.betrag < 0 %}style="color:var(--danger)"{% endif %}>{{ de(w.betrag) }} €</b></span>{% endfor %}</div>{% endif %}
+    {% if f.massnahme %}<p style="margin:.4em 0"><b>→</b> {{ f.massnahme }}</p>{% endif %}
+  </div>
+  {% endfor %}
+  {% if rep.model %}<details style="margin-top:12px"><summary>Gesendete Daten dieser Prüfung (pseudonymisiert)</summary>
+    <pre class="payload">{{ rep.payload|tojson(indent=2) }}</pre></details>{% endif %}
+</div>
+{% endif %}
+
+{% if preview is defined %}
+<div class="card" id="vorschau">
+  <h2 style="margin-top:0">Vorschau: das würde an OpenAI gehen</h2>
+  {% if leaks %}<div class="warn">⚠ Die Datenschutzprüfung hat echte Angaben gefunden – so würde <b>nicht</b> gesendet: {{ leaks|join(', ') }}</div>
+  {% else %}<p>✅ Datenschutzprüfung bestanden: keine Namen, IBANs oder Verwendungszwecke enthalten. Kennungen und Betragsfaktor werden bei jeder Prüfung neu ausgewürfelt.</p>{% endif %}
+  <pre class="payload">{{ preview }}</pre>
+</div>
+{% endif %}
+
+{% if reports|length > 1 %}
+<h2>Frühere Prüfungen</h2>
+<div class="scroll"><table>
+  <tr><th>Datum</th><th>Ergebnis</th><th>Befunde</th><th>Art</th></tr>
+  {% for r in reports %}{% set v = verdicts.get(r.verdict, ('', r.verdict)) %}
+  <tr><td><a href="/admin/pruefung/{{ r.id }}">{{ r.created_at.strftime('%d.%m.%Y %H:%M') }}</a></td><td>{{ v[0] }} {{ v[1] }}</td>
+    <td>{{ r.findings|length }} ({{ r.findings|selectattr('schwere', 'equalto', 'hoch')|list|length }} wichtig) · {{ (r.done or [])|length }} erledigt</td>
+    <td>{{ ('KI: ' ~ r.model) if r.model else 'Regeln' }}{% if r.status != 'ok' %} · <span style="color:var(--danger)">{{ r.status }}</span>{% endif %}</td></tr>
+  {% endfor %}
+</table></div>
+{% endif %}
+
+<h2 id="einstellungen">Einstellungen</h2>
+<form method="post" action="/admin/pruefung/settings" class="card">
+  <div class="grid">
+    <div><label>OpenAI-API-Schlüssel {% if has_key %}(gespeichert {{ key_hint }} – leer = unverändert){% endif %}</label>
+      <input type="password" name="openai_key" autocomplete="off" placeholder="sk-…"></div>
+    <div><label>Modell</label><input type="text" name="openai_model" value="{{ model }}" placeholder="gpt-5.6"></div>
+  </div>
+  <p class="muted">Der Schlüssel wird verschlüsselt gespeichert und nie angezeigt. Anfragen gehen mit <code>store: false</code> an die
+  OpenAI-API. Ein eigener Projekt-Schlüssel mit Ausgabenlimit ist empfehlenswert.</p>
+  <div class="check"><input type="checkbox" name="audit_monthly" id="am" {% if st.get('audit_monthly') == '1' %}checked{% endif %}><label for="am" style="margin:0">Einmal im Monat automatisch prüfen (ab dem 2., Ergebnis per Push)</label></div>
+  {% if has_key %}<div class="check"><input type="checkbox" name="forget_key" id="fk"><label for="fk" style="margin:0">gespeicherten Schlüssel löschen</label></div>{% endif %}
+  <button>Speichern</button>
+  <button class="sec" name="test" value="1">Speichern &amp; Schlüssel testen</button>
+</form>
+{% endblock %}
