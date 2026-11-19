@@ -141,6 +141,19 @@ class BankAccess(Base):
     log: Mapped[list] = mapped_column(JSON, default=list)  # letzte Vorgänge (Zeit, Text)
 
 
+class FinMemory(Base):
+    """Lernspeicher der Kategorisierung: Empfänger (normalisiert) → Kategorie (bestätigt von Hand, KI oder Lernvorschlag)."""
+
+    __tablename__ = "fin_memory"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(200), default="", index=True)
+    label: Mapped[str] = mapped_column(String(200), default="")  # Anzeige (Empfängername)
+    category_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(10), default="manuell")  # manuell | ki | lern
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class AuditReport(Base):
     """Kassenprüfung: Regelprüfung der App + (optional) Bewertung durch ein KI-Modell mit pseudonymisierten Daten."""
 
@@ -615,7 +628,8 @@ SETTING_DEFAULTS = {
     "openai_key": "",  # verschlüsselt (secretbox)
     "openai_model": "",
     "openai_models": "",  # Modelle des Zugangs (beim Schlüsseltest abgerufen)
-    "audit_monthly": "",  # Kassenprüfung einmal im Monat automatisch  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
+    "audit_monthly": "",
+    "fin_ai_suggestions": "",  # letzte KI-Vorschläge zur Kategorisierung (JSON)  # Kassenprüfung einmal im Monat automatisch  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
     "totp_admins": "1",  # Verwalter müssen die Zwei-Faktor-Anmeldung einrichten  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
     "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)
     "fin_buffer": "100",  # Sicherheitspuffer in €

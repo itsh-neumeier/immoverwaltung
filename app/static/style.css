@@ -284,3 +284,4 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 .action-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;padding:6px 8px;border-radius:8px;background:rgba(127,127,127,.07)}
 .action-row input[type=text]{max-width:7.5rem;margin:0}
 .action-row button,.action-row select{margin:0}
+.badge.suggest{background:#ecfdf5;color:#065f46;border-style:dashed}

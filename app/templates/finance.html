@@ -78,6 +78,8 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
   {% else %}<p class="muted">Keine weiteren regelmäßigen Zahlungen erwartet.</p>{% endif %}
 </div>
 
+<p><a class="btn sec" href="/admin/finanzen/lernen">🧠 Lernspeicher &amp; KI-Kategorisierung</a>
+{% if sugg %}<span class="muted"> {{ sugg|length }} Vorschläge für offene Umsätze</span>{% endif %}</p>
 <h2 id="umsaetze">Umsätze im Zeitraum <span class="muted" style="font-size:.9rem">Eingänge {{ d.income|eur }} · Ausgaben {{ d.outgo|eur }}</span></h2>
 <div class="card">
   <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
@@ -89,12 +91,14 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
     <div class="bank-head"><b>{{ t.booking_date.strftime('%d.%m.') if t.booking_date else '' }}</b>
       <b style="color:{{ 'var(--ok)' if t.amount > 0 else 'inherit' }}">{{ t.amount|eur }}</b><span>{{ t.name }}</span>
       {% if t.pending %}<span class="badge" style="background:#fef3c7;color:#92400e">vorgemerkt</span>{% endif %}
-      {% if c %}<span class="badge" style="border-color:{{ c.color }}">{{ c.name }}{% if t.category_id %} ✎{% endif %}</span>{% endif %}</div>
+      {% if c %}<span class="badge" style="border-color:{{ c.color }}">{{ c.name }}{% if t.category_id %} ✎{% endif %}</span>
+      {% elif sugg.get(t.id) %}{% set sg = sugg[t.id] %}<span class="badge suggest" title="Vorschlag des Lernmodells">💡 {{ sg[0].name }} {{ (sg[1] * 100)|round|int }} %</span>{% endif %}</div>
     <div class="muted" style="font-size:12px">{{ t.purpose[:160] }}</div>
     <form method="post" action="/admin/finanzen/txn/{{ t.id }}" class="bank-actions">
       <input type="hidden" name="show" value="{{ show }}">
       <select name="category" aria-label="Kategorie"><option value="">– keine Kategorie –</option>
-        {% for k in d.cats %}<option value="{{ k.id }}" {% if c and c.id == k.id %}selected{% endif %}>{{ k.name }}</option>{% endfor %}</select>
+        {% set sgc = sugg.get(t.id)[0].id if (not c and sugg.get(t.id)) else none %}
+        {% for k in d.cats %}<option value="{{ k.id }}" {% if (c and c.id == k.id) or sgc == k.id %}selected{% endif %}>{{ k.name }}</option>{% endfor %}</select>
       <label class="check" style="margin:0"><input type="checkbox" name="remember" value="1" {% if not c %}checked{% endif %}> als Regel merken</label>
       <button class="sec">Speichern</button>
     </form>

@@ -124,6 +124,9 @@ class Matcher:
         self.rules = [(c, parse_rules(c.rules)) for c in self.cats]
         self.reserve = reserve_ibans(s)
         self.cache: dict = {}
+        from .learn import memory
+
+        self.memory = memory(s)  # Lernspeicher: Empfänger → Kategorie
 
     def category(self, t: FinTxn) -> Optional[FinCategory]:
         if t.category_id and t.category_id in self.by_id:
@@ -150,6 +153,11 @@ class Matcher:
                         hit = bool(r.rx.search(purpose))
                 if hit and size > best_len:
                     best, best_len = c, size
+        if best is None and self.memory:
+            from .learn import name_key
+
+            cid = self.memory.get(name_key(t))
+            best = self.by_id.get(cid) if cid else None
         return best
 
 
@@ -440,8 +448,10 @@ def finance_page(request: Request, show: str = "", s: Session = Depends(get_sess
     if show == "offen":
         txns = [t for t in txns if data["matcher"].category(t) is None]
     from .banking import refresh_info
+    from .learn import suggestions
 
-    return _page(request, "finance.html", bank_refresh=refresh_info(s), d=data, txns=txns, show=show, kinds=KINDS, st=st,
+    sugg = suggestions(s, data["matcher"], txns)
+    return _page(request, "finance.html", bank_refresh=refresh_info(s), sugg=sugg, d=data, txns=txns, show=show, kinds=KINDS, st=st,
                  fmt_iban=sepa.format_iban, colors=COLORS)
 
 

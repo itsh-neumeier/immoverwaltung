@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Lernspeicher{% endblock %}
+{% block content %}
+<h1>🧠 Lernspeicher &amp; KI-Kategorisierung</h1>
+<p class="muted">Das Lernmodell lernt aus allen bereits kategorisierten Umsätzen ({{ trained }} Umsätze, {{ ncat }} Kategorien) und
+schlägt für offene Umsätze eine Kategorie vor. Was du übernimmst, landet im <b>Lernspeicher</b> und gilt danach automatisch für
+alle – auch künftigen – Umsätze dieses Empfängers (Regeln der Kategorien haben Vorrang). <a href="/admin/finanzen">← Finanzen</a></p>
+
+<h2>Vorschläge des Lernmodells</h2>
+{% if groups %}
+<form method="post" action="/admin/finanzen/lernen/sure" style="margin-bottom:8px">
+  <button class="sec">Alle sicheren (≥ {{ (threshold * 100)|int }} %) übernehmen</button></form>
+<form method="post" action="/admin/finanzen/lernen/accept" class="card">
+  <input type="hidden" name="source" value="lern">
+  <div class="scroll"><table>
+    <tr><th></th><th>Empfänger</th><th class="r">Umsätze</th><th class="r">Summe</th><th>Kategorie</th><th class="r">Sicherheit</th></tr>
+    {% for g in groups %}
+    <tr>
+      <td><input type="checkbox" name="key" value="{{ g.key }}" {% if g.p >= threshold %}checked{% endif %} aria-label="übernehmen"></td>
+      <td>{{ g.name[:50] }}<input type="hidden" name="label_{{ g.key }}" value="{{ g.name[:120] }}"><input type="hidden" name="p_{{ g.key }}" value="{{ g.p }}"></td>
+      <td class="r">{{ g.n }}</td><td class="r">{{ g.sum|eur }}</td>
+      <td><select name="cat_{{ g.key }}">{% for c in cats %}<option value="{{ c.id }}" {% if c.id == g.cat.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></td>
+      <td class="r" style="color:{{ 'var(--ok)' if g.p >= threshold else 'inherit' }}">{{ (g.p * 100)|round|int }} %</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  <button>Ausgewählte übernehmen</button>
+</form>
+{% else %}<p class="muted">Keine offenen Vorschläge – entweder ist alles kategorisiert oder das Modell braucht noch mehr Beispiele.</p>{% endif %}
+
+<h2 id="ki">KI-Kategorisierung (OpenAI)</h2>
+<div class="card">
+  <p class="muted" style="margin-top:0">Für Empfänger, die das Lernmodell nicht sicher kennt. An die KI gehen <b>nur Händler-/Firmennamen</b>
+  (ohne Nummern) und die Kategorienamen – keine Beträge, keine Daten, keine IBAN, keine Verwendungszwecke. Empfänger, die
+  wie Personen aussehen, werden nicht gesendet.</p>
+  <form method="post" action="/admin/finanzen/lernen/ki" class="inline-actions" onsubmit="this.querySelector('button').disabled=true">
+    <button>🤖 KI-Vorschläge holen</button>
+    <a class="btn sec" href="/admin/finanzen/lernen?show=vorschau#ki">Was geht raus?</a>
+  </form>
+  {% if preview %}
+  <p><b>Würde gesendet ({{ preview[0]|length }}):</b> {% for g in preview[0] %}<code>{{ sanitize(g.name) }}</code>{% if not loop.last %}, {% endif %}{% else %}–{% endfor %}</p>
+  {% if preview[1] %}<p class="muted"><b>Nicht gesendet (vermutlich Personen, {{ preview[1]|length }}):</b> {{ preview[1][:30]|join(', ') }}</p>{% endif %}
+  {% endif %}
+  {% if ai %}
+  <form method="post" action="/admin/finanzen/lernen/accept">
+    <input type="hidden" name="source" value="ki">
+    <div class="scroll"><table>
+      <tr><th></th><th>Empfänger</th><th class="r">Umsätze</th><th>Kategorie (KI)</th><th class="r">Sicherheit</th></tr>
+      {% for a in ai %}
+      <tr><td><input type="checkbox" name="key" value="{{ a.key }}" {% if a.sicher >= 0.8 %}checked{% endif %}></td>
+        <td>{{ a.name[:50] }}<input type="hidden" name="label_{{ a.key }}" value="{{ a.name[:120] }}"><input type="hidden" name="p_{{ a.key }}" value="{{ a.sicher }}"></td>
+        <td class="r">{{ a.n }}</td>
+        <td><select name="cat_{{ a.key }}">{% for c in cats %}<option value="{{ c.id }}" {% if c.id == a.category_id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></td>
+        <td class="r">{{ (a.sicher * 100)|round|int }} %</td></tr>
+      {% endfor %}
+    </table></div>
+    <button>Ausgewählte übernehmen</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2 id="speicher">Lernspeicher ({{ memory|length }})</h2>
+{% if memory %}
+<div class="scroll"><table>
+  <tr><th>Empfänger</th><th>Kategorie</th><th>Quelle</th><th>seit</th><th></th></tr>
+  {% for m in memory %}
+  <tr><td>{{ m.label[:60] }}</td><td>{{ by_id[m.category_id].name if m.category_id in by_id else '–' }}</td>
+    <td>{{ {'manuell': '✋ von Hand', 'ki': '🤖 KI', 'lern': '🧠 Lernmodell'}.get(m.source, m.source) }}{% if m.confidence < 1 %} ({{ (m.confidence * 100)|round|int }} %){% endif %}</td>
+    <td>{{ m.created_at.strftime('%d.%m.%Y') }}</td>
+    <td><form method="post" action="/admin/finanzen/lernen/forget/{{ m.id }}"><button class="sec small">vergessen</button></form></td></tr>
+  {% endfor %}
+</table></div>
+{% else %}<p class="muted">Noch leer.</p>{% endif %}
+{% endblock %}

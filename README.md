@@ -340,7 +340,7 @@ Unter Finanzen → Kassenprüfung (KI) prüft die App Rücklagen, Kontoabgleich,
 - **Regelprüfung in der App:** Topf im Minus, Töpfe vs. Kontostand, zu wenig angesparte Töpfe, nicht zugeordnete
   Umsätze, unbestätigte Aufträge, offene Gutschriften, überschrittene Budgets, drohendes Minus.
 - **Bewertung durch OpenAI** (optional, eigener API-Schlüssel, verschlüsselt gespeichert, Modell einstellbar,
-  Standard `gpt-5.6`): Die KI bewertet, ergänzt Auffälligkeiten (Ausreißer, Doppelzahlungen, neue Empfänger,
+  Standard `gpt-5-mini`): Die KI bewertet, ergänzt Auffälligkeiten (Ausreißer, Doppelzahlungen, neue Empfänger,
   Preissteigerungen) und schlägt Maßnahmen vor. Die Antwort kommt als festes JSON-Schema zurück.
 - **Pseudonymisiert:** keine IBAN, Namen, Verwendungszwecke, Gebäude- oder Topfnamen. Töpfe, Empfänger, Konten und
   Gebäude werden zu Zufallskennungen (neu je Prüfung), Topfnamen nur als allgemeine Art (z. B. „Versicherung“).
@@ -351,8 +351,23 @@ Unter Finanzen → Kassenprüfung (KI) prüft die App Rücklagen, Kontoabgleich,
   aus. Ist es für den Zugang nicht freigegeben oder ist das Kontingent erschöpft, stellt die App automatisch ein
   günstiges Modell ein, das funktioniert (mini vor nano). Fehler wie „Kontingent aufgebraucht“ oder „zu viele
   Anfragen“ werden verständlich angezeigt. Eine Prüfung ist genau eine Anfrage.
+- **Vorschläge direkt umsetzen:** Töpfe im Minus per Knopf aus „Freies Vermögen“ auffüllen (nur in der App) oder
+  per FinTS vom Hauptkonto (Betrag änderbar); eine Differenz zwischen Kontostand und Töpfen einem Topf zuweisen.
+- **Bestätigung „AUSFÜHREN“:** Vor jedem Bankauftrag (Einreichen, Übertrag, Auffüllen, sofortiges Einreichen neuer
+  Aufträge) erscheint ein Popup. Erst nach Eingabe von AUSFÜHREN wird eingereicht; das wird auch serverseitig geprüft.
 - **Vorschau „Was geht raus?“** zeigt die genaue Anfrage. Berichte werden gespeichert, Befunde lassen sich abhaken.
   Optional prüft die App einmal im Monat automatisch, mit Push-Nachricht.
+
+### Lernende Kategorisierung (Finanzen → Lernspeicher)
+
+- **Lernmodell:** lernt aus allen kategorisierten Umsätzen (Empfänger, Wörter im Verwendungszweck, IBAN, Richtung,
+  Betragsgröße) und zeigt bei offenen Umsätzen einen Vorschlag mit Wahrscheinlichkeit (💡). Sichere Vorschläge
+  (ab 90 %) lassen sich gesammelt übernehmen.
+- **Lernspeicher:** Übernommene Zuordnungen Empfänger → Kategorie gelten danach automatisch für alle, auch künftigen,
+  Umsätze dieses Empfängers. Regeln der Kategorien haben Vorrang. Einträge lassen sich wieder „vergessen“.
+- **KI-Kategorisierung (OpenAI):** nur für Empfänger, die das Modell nicht sicher kennt. Es gehen nur Händler- und
+  Firmennamen (ohne Nummern) und die Kategorienamen raus; keine Beträge, Daten, IBANs oder Verwendungszwecke.
+  Empfänger, die wie Personen aussehen, werden nicht gesendet. Vorschau „Was geht raus?“, Übernahme per Haken.
 
 ### Webhook-API (n8n, Home Assistant)
 
