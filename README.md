@@ -316,8 +316,16 @@ Direkte Verbindung zur Bank (FinTS 3.0, PIN/TAN, z. B. Sparkasse mit S-pushTAN),
 - **Konten abrufen:** zeigt alle Konten mit Art/Produkt, Rolle in der App (Hauptkonto, Rücklagenkonto, Finanzplanung)
   und den laut Bank erlaubten Geschäftsvorfällen, z. B. ob vom Sparkonto überwiesen werden darf.
 - **Umsätze & Salden abrufen:** camt-Umsätze wie beim Datei-Import für Finanzplanung und Rücklagen-Abgleich,
-  ohne Dubletten zu bereits hochgeladenen Auszügen. Optional täglich automatisch. Etwa alle 90 Tage verlangt die Bank
+  ohne Dubletten zu bereits hochgeladenen Auszügen. Automatisch zu einstellbaren Uhrzeiten (Standard 7, 13 und 19 Uhr)
+  und per „🔄 Jetzt aktualisieren“ auf Finanzen, Rücklagen und Bankzugang. Etwa alle 90 Tage verlangt die Bank
   eine pushTAN-Freigabe; die Seite fragt den Status selbst ab.
+- **Vorgemerkte Umsätze** werden mit abgerufen, als „vorgemerkt“ markiert und in Budgets und Spielraum
+  berücksichtigt. Sobald die Bank sie bucht, wird die Vormerkung ersetzt, ohne Dublette; Kategorie und Zuordnung
+  bleiben. Stornierte Vormerkungen verschwinden beim nächsten Abruf.
+- **Nach jedem Auftrag** werden die beteiligten Konten im selben Bankdialog gleich neu abgerufen (keine weitere TAN).
+- **Sofort einreichen** (Rücklagen → Konten, je Gebäude): Neue Aufträge (Sammelauftrag, Gutschriften) gehen direkt
+  an die Bank; der Monatslauf reicht am Versandtag als Terminüberweisung ein, wartet bis zu 4 Minuten auf die pushTAN
+  und meldet sich sonst per Push. Die Mail kommt dann ohne XML-Anhang.
 - **Aufträge einreichen:** offene SEPA-Aufträge der App (Sammelauftrag Rücklagen, Gutschriften, Überweisung vom
   Sparkonto mit Kennung) mit TAN freigeben. Eine Zukunfts-Ausführung geht als Termin(sammel)überweisung, oder du wählst
   „sofort ausführen“. Danach gilt der Auftrag in den Rücklagen automatisch als ausgeführt. Erlaubt die Bank keine

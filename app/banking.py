@@ -39,6 +39,7 @@ router = APIRouter()
 PRODUCT_VERSION = "1.0"
 JOB_TTL = 10 * 60  # offene TAN-Abfrage verwerfen nach … Sekunden
 POLL_SECONDS = 3  # pushTAN: Status alle … Sekunden abfragen (Bankvorgabe: nicht öfter als alle 2 s)
+BACKGROUND_POLL = 5  # Hintergrund (Monatslauf, Automatik): Abstand der Statusabfragen
 LOG_KEEP = 30
 FIRST_DAYS = 90  # erster Abruf ohne Startdatum: so viele Tage zurück (ohne erneute TAN meist max. 90)
 IMMEDIATE = date(1999, 1, 1)  # SEPA-Vorgabe der Kreditwirtschaft für „sofort ausführen“
@@ -461,7 +462,15 @@ def _advance(job: Job) -> None:
     from fints.client import NeedRetryResponse
 
     while job.idx < len(job.steps):
-        res = _exec(job, job.steps[job.idx])
+        step = job.steps[job.idx]
+        if job.kind == "order" and step[0] in ("fetch", "balance"):
+            try:  # Nachabruf nach dem Auftrag darf den Auftrag nicht scheitern lassen
+                res = _exec(job, step)
+            except Exception:  # noqa: BLE001
+                log.info("Nachabruf fehlgeschlagen", exc_info=True)
+                res = None
+        else:
+            res = _exec(job, step)
         if isinstance(res, NeedRetryResponse):
             job.challenge = res
             return
@@ -604,7 +613,7 @@ def _drop_known(s: Session, txns: list) -> list:
         return txns
     since = min((t.booking_date for t in txns if t.booking_date), default=None)
     keys = set()
-    q = s.query(FinTxn)
+    q = s.query(FinTxn).filter(FinTxn.pending.isnot(True))
     if since:
         q = q.filter(FinTxn.booking_date >= since)
     keys |= {_soft_key(f.account_iban, f.booking_date, f.amount, f.purpose) for f in q}
@@ -612,7 +621,7 @@ def _drop_known(s: Session, txns: list) -> list:
     for b in s.query(Building):
         ibans[(b.id, "main")] = b.account_iban
         ibans[(b.id, "reserve")] = b.reserve_iban
-    q = s.query(BankLine)
+    q = s.query(BankLine).filter(BankLine.pending.isnot(True))
     if since:
         q = q.filter(BankLine.booking_date >= since)
     keys |= {_soft_key(ibans.get((l.building_id, l.account), ""), l.booking_date, l.amount, l.purpose) for l in q}
@@ -621,14 +630,14 @@ def _drop_known(s: Session, txns: list) -> list:
             not in keys]
 
 
-def ingest(s: Session, txns: list, bals: list) -> str:
+def ingest(s: Session, txns: list, bals: list, snapshot: Optional[set] = None) -> str:
     """Wie der Datei-Import: Finanzplanung (Hauptkonto) und Rücklagen-Abgleich je Gebäude."""
     from . import finance, reserves
 
     txns = _drop_known(s, txns)
     parts = []
     finance.seed(s)
-    n, _ = finance.ingest(s, txns, bals)
+    n, _ = finance.ingest(s, txns, bals, snapshot)
     if n:
         parts.append(f"Finanzen: {n} neu")
         finance.budget_alerts(s)
@@ -636,21 +645,39 @@ def ingest(s: Session, txns: list, bals: list) -> str:
     for bld in s.query(Building):
         ibans = {sepa.normalize_iban(bld.account_iban), sepa.normalize_iban(bld.reserve_iban)} - {""}
         if ibans & seen:
-            m = reserves.ingest_bank(s, bld, txns, bals)
+            m = reserves.ingest_bank(s, bld, txns, bals, snapshot=snapshot)
             parts.append(f"Rücklagen ({bld.label}): {m}")
     return " · ".join(parts) or "keine neuen Umsätze"
 
 
-def _process_sync(s: Session, acc: BankAccess, job: Job) -> str:
-    txns, bals = [], []
+def _sync_results(s: Session, acc: BankAccess, pairs: list) -> str:
+    """Abruf-Ergebnisse (Schritt, Ergebnis) übernehmen: gebuchte + vorgemerkte Umsätze, Salden."""
+    txns, bals, snapshot = [], [], set()
     by_iban = {a["iban"]: dict(a) for a in (acc.accounts or [])}  # Kopie, sonst erkennt SQLAlchemy die Änderung nicht
-    for step, res in zip(job.steps, job.results):
+    for step, res in pairs:
         iban = step[1]["iban"] if len(step) > 1 else ""
-        if step[0] == "fetch" and res:
-            booked = res[0] if isinstance(res, (tuple, list)) else []
+        if step[0] == "fetch" and res is not None:
+            booked, pending = (res[0], res[1]) if isinstance(res, (tuple, list)) and len(res) == 2 else (res, [])
             for doc in booked or []:
-                data = doc if isinstance(doc, bytes) else str(doc).encode()
-                txns += bankimport.parse_camt(data, bals)
+                if doc:
+                    txns += bankimport.parse_camt(doc if isinstance(doc, bytes) else str(doc).encode(), bals)
+            pend = []
+            for doc in pending or []:
+                if not doc:
+                    continue
+                try:
+                    pend += [t for t in bankimport.parse_camt(doc if isinstance(doc, bytes) else str(doc).encode(),
+                                                              None, include_pending=True)]
+                except bankimport.ImportError_:
+                    pass
+            for t in pend:
+                t.pending = True
+                t.account_iban = t.account_iban or iban
+            txns += pend
+            snapshot.add(iban)
+            if iban in by_iban:
+                by_iban[iban]["pending"] = round(sum(t.amount for t in pend), 2)
+                by_iban[iban]["pending_count"] = len(pend)
         if step[0] == "balance" and res is not None:
             amount = float(res.amount.amount)  # mt940 liefert das Vorzeichen schon (Soll „D“ = negativ, z. B. Darlehen)
             day = getattr(res, "date", None) or date.today()
@@ -659,18 +686,23 @@ def _process_sync(s: Session, acc: BankAccess, job: Job) -> str:
                 by_iban[iban]["balance"], by_iban[iban]["balance_date"] = round(amount, 2), day.isoformat()
     acc.accounts = list(by_iban.values())
     acc.last_sync = datetime.now()
-    for t in txns:  # Konto-IBAN fehlt in seltenen Fällen im camt → aus dem Abruf ergänzen
-        if not t.account_iban and job.params.get("single_iban"):
-            t.account_iban = job.params["single_iban"]
-    msg = f"{len(txns)} Umsätze abgerufen"
-    return msg + " · " + ingest(s, txns, bals)
+    n_pend = sum(1 for t in txns if t.pending)
+    msg = f"{len(txns) - n_pend} Umsätze" + (f" + {n_pend} vorgemerkt" if n_pend else "") + " abgerufen"
+    return msg + " · " + ingest(s, txns, bals, snapshot)
+
+
+def _process_sync(s: Session, acc: BankAccess, job: Job) -> str:
+    return _sync_results(s, acc, list(zip(job.steps, job.results)))
 
 
 def _process_order(s: Session, acc: BankAccess, job: Job) -> str:
     from fints.client import ResponseStatus
 
     notes, ok = [], True
-    for res in job.results:
+    pairs = list(zip(job.steps, job.results))
+    for step, res in pairs:
+        if step[0] != "order":
+            continue
         status = getattr(res, "status", None)
         texts = [f"{r.code} {r.text}" for r in getattr(res, "responses", [])]
         if status == ResponseStatus.ERROR:
@@ -692,6 +724,12 @@ def _process_order(s: Session, acc: BankAccess, job: Job) -> str:
         msg += " · in den Rücklagen als ausgeführt bestätigt"
     if notes:
         msg += " · Bank: " + "; ".join(n for n in notes if n)[:300]
+    rest = [(st, r) for st, r in pairs if st[0] in ("fetch", "balance")]
+    if rest:  # Konten gleich nachziehen (Auftrag erscheint als vorgemerkt)
+        try:
+            msg += " · Konten aktualisiert: " + _sync_results(s, acc, rest)
+        except Exception as e:  # noqa: BLE001
+            msg += f" · Kontoabruf danach fehlgeschlagen ({explain(e)})"
     return msg
 
 
@@ -738,6 +776,14 @@ def sync_steps(acc: BankAccess, ibans: Optional[set] = None, since: Optional[dat
 
 
 def order_steps(acc: BankAccess, order: Order) -> list:
+    """Auftrag(s) plus anschließender Abruf der beteiligten eigenen Konten (gleicher Dialog, keine extra TAN)."""
+    steps = _order_steps(acc, order)
+    ibans = {sepa.normalize_iban(order.debtor.iban)} | {sepa.normalize_iban(t.creditor.iban) for t in order.transfers
+                                                        if find_account(acc, t.creditor.iban)}
+    return steps + sync_steps(acc, ibans, date.today() - timedelta(days=3))
+
+
+def _order_steps(acc: BankAccess, order: Order) -> list:
     a = find_account(acc, order.debtor.iban)
     if a is None:
         raise BankError(f"Konto {sepa.format_iban(order.debtor.iban)} gehört nicht zu diesem Bankzugang.")
@@ -764,22 +810,56 @@ def order_steps(acc: BankAccess, order: Order) -> list:
 
 
 # --------------------------------------------------------------------------- Hintergrund: täglicher Abruf
-def auto_tick(now: Optional[datetime] = None) -> list[str]:
-    """Täglicher Umsatzabruf für Zugänge mit gespeicherter PIN. Braucht die Bank eine pushTAN (alle ~90 Tage),
-    wird bis zu 4 Minuten auf die Freigabe gewartet, sonst Hinweis per Push."""
+def sync_slots(acc: BankAccess) -> list[int]:
+    hours = sorted({int(x) for x in re.findall(r"\d+", acc.sync_times or "") if 0 <= int(x) <= 23})
+    return hours or [acc.sync_hour or 7]
+
+
+def due_slot(acc: BankAccess, now: datetime) -> Optional[str]:
+    """Fälliger Abrufzeitpunkt (z. B. „2026-11-19T13“) oder None – je Uhrzeit einmal am Tag."""
+    passed = [h for h in sync_slots(acc) if h <= now.hour]
+    if not passed:
+        return None
+    key = f"{now.date().isoformat()}T{max(passed):02d}"
+    return key if key > (acc.last_slot or "") else None
+
+
+def await_release(aid: int, job: Job, seconds: int = 240) -> Job:
+    """Im Hintergrund auf eine pushTAN-Freigabe warten (Statusabfrage wie die Webseite)."""
+    deadline = time.time() + seconds
+    while job.waiting and job.challenge_info().get("type") == "decoupled" and time.time() < deadline:
+        time.sleep(BACKGROUND_POLL)
+        try:
+            job = answer(aid, poll=True)
+        except BankError:
+            break
+    return job
+
+
+def _notify(title: str, body: str, tag: str, url: str = "/admin/bank") -> None:
     from . import notify
 
+    with SessionLocal() as s:
+        try:
+            notify.to_admins(s, "push_admin_errors", title, body[:200], url=url, tag=tag)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def auto_tick(now: Optional[datetime] = None) -> list[str]:
+    """Automatischer Umsatzabruf (Standard 7, 13 und 19 Uhr) für Zugänge mit gespeicherter PIN. Braucht die Bank
+    eine pushTAN (alle ~90 Tage), wird bis zu 4 Minuten auf die Freigabe gewartet, sonst Hinweis per Push."""
     now = now or datetime.now()
     out = []
     with SessionLocal() as s:
-        due = [a.id for a in s.query(BankAccess).filter(BankAccess.auto_sync.is_(True))
-               if a.pin and a.accounts and (a.last_auto is None or a.last_auto < now.date()) and now.hour >= (a.sync_hour or 7)]
-    for aid in due:
+        due = [(a.id, k) for a in s.query(BankAccess).filter(BankAccess.auto_sync.is_(True))
+               if a.pin and a.accounts and (k := due_slot(a, now))]
+    for aid, key in due:
         if (j := JOBS.get(aid)) is not None and not j.done:
             continue  # gerade ein manueller Vorgang
         with SessionLocal() as s:
             acc = s.get(BankAccess, aid)
-            acc.last_auto = now.date()
+            acc.last_slot, acc.last_auto = key, now.date()
             s.commit()
             pin = secretbox.maybe_decrypt(acc.pin or "")
             if not pin:
@@ -789,36 +869,69 @@ def auto_tick(now: Optional[datetime] = None) -> list[str]:
             except BankError as e:
                 out.append(str(e))
                 continue
-        deadline = time.time() + 240
-        while job.waiting and job.challenge_info().get("type") == "decoupled" and time.time() < deadline:
-            time.sleep(POLL_SECONDS + 2)
-            try:
-                job = answer(aid, poll=True)
-            except BankError:
-                break
+        job = await_release(aid, job)
         if job.waiting:
             cancel(aid)
             with SessionLocal() as s:
                 acc = s.get(BankAccess, aid)
-                _log(acc, "Automatischer Abruf: Bank verlangt eine TAN-Freigabe – bitte einmal manuell abrufen.", True)
+                _log(acc, "Automatischer Abruf: Bank verlangt eine TAN-Freigabe – bitte einmal „Jetzt aktualisieren“.", True)
                 s.commit()
-                try:
-                    notify.to_admins(s, "push_admin_errors", "Bankabruf braucht Freigabe",
-                                     f"{acc.name}: bitte unter Finanzen → Bankzugang einmal „Umsätze abrufen“ und per TAN freigeben.",
-                                     url="/admin/bank", tag=f"fints-{aid}")
-                except Exception:  # noqa: BLE001
-                    pass
+                name = acc.name
+            _notify("Bankabruf braucht Freigabe", f"{name}: bitte einmal „Jetzt aktualisieren“ und per pushTAN freigeben.",
+                    f"fints-{aid}")
             out.append(f"{aid}: TAN nötig")
         else:
             out.append(f"{aid}: {job.message}")
             if not job.ok:
-                with SessionLocal() as s:
-                    try:
-                        notify.to_admins(s, "push_admin_errors", "Bankabruf fehlgeschlagen", job.message[:200],
-                                         url="/admin/bank", tag=f"fints-{aid}")
-                    except Exception:  # noqa: BLE001
-                        pass
+                _notify("Bankabruf fehlgeschlagen", job.message, f"fints-{aid}")
     return out
+
+
+# --------------------------------------------------------------------------- Aufträge sofort einreichen
+def submit_export(s: Session, ex: SepaExport, user: str = "", pin: str = "", back: str = "") -> tuple[BankAccess, Job]:
+    """SEPA-Auftrag der App per FinTS einreichen (TAN-Freigabe folgt)."""
+    order = order_for_export(s, ex)
+    acc = access_for_iban(s, order.debtor.iban)
+    if acc is None:
+        raise BankError("Kein Bankzugang mit dem Auftraggeberkonto – erst Bankzugang verbinden.")
+    pin = pin or secretbox.maybe_decrypt(acc.pin or "") or ""
+    if not pin:
+        raise BankError("PIN nicht gespeichert – Auftrag unter Finanzen → Bankzugang mit PIN einreichen.")
+    job = start(s, acc, "order", order_steps(acc, order), pin, f"Auftrag {order.label}", user,
+                {"order": order, "back": back})
+    return acc, job
+
+
+def submit_background(export_id: int, title: str) -> None:
+    """Monatslauf: im Hintergrund einreichen und bis zu 4 Minuten auf die pushTAN warten."""
+    def run():
+        try:
+            with SessionLocal() as s:
+                ex = s.get(SepaExport, export_id)
+                if ex is None or ex.status == "done":
+                    return
+                acc, job = submit_export(s, ex, "Monatslauf")
+            job = await_release(acc.id, job)
+            if job.waiting:
+                cancel(acc.id)
+                _notify(f"{title}: Freigabe verpasst", "Auftrag nicht eingereicht – unter Finanzen → Bankzugang erneut "
+                        "einreichen und per pushTAN freigeben.", f"fints-order-{export_id}", "/admin/bank#auftraege")
+            elif not job.ok:
+                _notify(f"{title}: nicht eingereicht", job.message, f"fints-order-{export_id}", "/admin/bank#auftraege")
+        except BankError as e:
+            _notify(f"{title}: nicht eingereicht", str(e), f"fints-order-{export_id}", "/admin/bank#auftraege")
+        except Exception:  # noqa: BLE001
+            log.exception("FinTS-Einreichung im Hintergrund")
+
+    threading.Thread(target=run, daemon=True, name=f"fints-order-{export_id}").start()
+
+
+def auto_submit_ready(s: Session, bld: Building, ex: SepaExport) -> Optional[BankAccess]:
+    """Bankzugang, über den dieser Auftrag sofort eingereicht werden soll (Gebäude-Einstellung, Konto vorhanden)."""
+    if not getattr(bld, "fints_submit", True) or not scope.is_super():
+        return None
+    debtor = bld.account_iban if ex.kind == "in" else bld.reserve_iban
+    return access_for_iban(s, debtor)
 
 
 _auto_lock = threading.Lock()
@@ -843,6 +956,18 @@ def _auto_run() -> None:
 
 
 # --------------------------------------------------------------------------- Web
+def refresh_info(s: Session) -> Optional[dict]:
+    """Für den Knopf „Jetzt aktualisieren“ (nur Super-Admin, verbundener Bankzugang)."""
+    if not scope.is_super():
+        return None
+    accs = [a for a in s.query(BankAccess).order_by(BankAccess.id) if a.accounts]
+    if not accs:
+        return None
+    last = max((a.last_sync for a in accs if a.last_sync), default=None)
+    auto = next(((a.sync_times or "7,13,19").replace(",", ", ") for a in accs if a.auto_sync), "")
+    return {"last": last, "pin": all(a.pin for a in accs), "auto": auto}
+
+
 def _acc(s: Session, aid) -> BankAccess:
     try:
         acc = s.get(BankAccess, int(aid))
@@ -867,10 +992,15 @@ def _back(acc: Optional[BankAccess] = None) -> str:
     return "/admin/bank" + (f"#bank-{acc.id}" if acc else "")
 
 
-def _job_redirect(acc: BankAccess, job: Job):
+def _safe_back(url: str) -> str:
+    return url if url.startswith("/admin") and "//" not in url else ""
+
+
+def _job_redirect(acc: BankAccess, job: Job, prefix: str = ""):
     if job.waiting:
-        return _redirect(f"/admin/bank?job={acc.id}#vorgang", "Freigabe nötig")
-    return _redirect(_back(acc), job.message or ("Erledigt" if job.ok else "Fehlgeschlagen"))
+        return _redirect(f"/admin/bank?job={acc.id}#vorgang", (prefix + " · " if prefix else "") + "Freigabe nötig")
+    text = job.message or ("Erledigt" if job.ok else "Fehlgeschlagen")
+    return _redirect(_safe_back(job.params.get("back", "")) or _back(acc), (prefix + " · " if prefix else "") + text)
 
 
 def open_exports(s: Session) -> list[dict]:
@@ -896,7 +1026,7 @@ def bank_page(request: Request, job: int = 0, s: Session = Depends(get_session))
     jobs = {a.id: JOBS.get(a.id) for a in accesses}
     st = get_settings(s)
     own = [(a, x) for a in accesses for x in (a.accounts or [])]
-    return _page(request, "bank.html", accesses=accesses, jobs=jobs, open_job=job, st=st,
+    return _page(request, "bank.html", bank_refresh=refresh_info(s), accesses=accesses, jobs=jobs, open_job=job, st=st,
                  product_env=bool(os.getenv("FINTS_PRODUCT_ID", "").strip()), product=product_id(s),
                  roles=roles(s), exports=open_exports(s), own=own, ops_names=OPS, fmt_iban=sepa.format_iban,
                  de=_de, today=date.today(), key_env=bool(os.getenv("APP_ENCRYPTION_KEY", "").strip()))
@@ -929,10 +1059,8 @@ async def access_save(request: Request, aid: int, s: Session = Depends(get_sessi
     acc.blz, acc.server, acc.login = blz, server, login
     acc.customer_id = str(form.get("customer_id", "")).strip()
     acc.auto_sync = bool(form.get("auto_sync"))
-    try:
-        acc.sync_hour = max(0, min(23, int(form.get("sync_hour") or 7)))
-    except ValueError:
-        acc.sync_hour = 7
+    hours = sorted({int(x) for x in re.findall(r"\d+", str(form.get("sync_times", ""))) if 0 <= int(x) <= 23})
+    acc.sync_times = ",".join(str(h) for h in hours) or "7,13,19"
     try:
         acc.sync_from = date.fromisoformat(str(form.get("sync_from"))) if form.get("sync_from") else None
     except ValueError:
@@ -1006,8 +1134,9 @@ async def export_submit(request: Request, eid: int, s: Session = Depends(get_ses
     ex = s.get(SepaExport, eid)
     if ex is None or not scope.can(ex.building_id):
         raise HTTPException(404)
+    back = _safe_back(str(form.get("back", "")))
     if ex.status == "done":
-        return _redirect("/admin/bank#auftraege", "Schon als ausgeführt bestätigt.")
+        return _redirect(back or "/admin/bank#auftraege", "Schon als ausgeführt bestätigt.")
     try:
         order = order_for_export(s, ex)
         if form.get("now"):
@@ -1017,10 +1146,36 @@ async def export_submit(request: Request, eid: int, s: Session = Depends(get_ses
             raise BankError("Kein Bankzugang mit dem Auftraggeberkonto – erst Bankzugang verbinden.")
         steps = order_steps(acc, order)
         job = start(s, acc, "order", steps, _pin(acc, form), f"Auftrag {order.label}", _user(request),
-                    {"order": order})
+                    {"order": order, "back": back})
     except (BankError, sepa.SepaError, ET.ParseError) as e:
-        return _redirect("/admin/bank#auftraege", f"Nicht eingereicht: {e}")
+        return _redirect(back or "/admin/bank#auftraege", f"Nicht eingereicht: {e}")
     return _job_redirect(acc, job)
+
+
+@router.post("/admin/bank/refresh")
+async def refresh(request: Request, s: Session = Depends(get_session)):
+    """„Jetzt aktualisieren“: alle Konten aller Bankzugänge abrufen (gespeicherte PIN oder eingegebene)."""
+    form = await request.form()
+    back = _safe_back(str(form.get("back", ""))) or "/admin/bank"
+    msgs = []
+    for acc in s.query(BankAccess).order_by(BankAccess.id):
+        if not acc.accounts:
+            continue
+        pin = _pin(acc, form)
+        if not pin:
+            msgs.append(f"{acc.name}: PIN nicht gespeichert – unter Bankzugang abrufen")
+            continue
+        try:
+            job = start(s, acc, "sync", sync_steps(acc), pin, "Jetzt aktualisieren", _user(request), {"back": back})
+        except BankError as e:
+            msgs.append(f"{acc.name}: {e}")
+            continue
+        if job.waiting:
+            return _job_redirect(acc, job, " · ".join(msgs))
+        msgs.append(f"{acc.name}: {job.message}")
+    if not msgs:
+        return _redirect("/admin/bank", "Noch kein verbundener Bankzugang.")
+    return _redirect(back, " · ".join(msgs))
 
 
 @router.post("/admin/bank/transfer")

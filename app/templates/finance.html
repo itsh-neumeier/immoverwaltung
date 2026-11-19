@@ -2,6 +2,7 @@
 {% block title %}Finanzen{% endblock %}
 {% block content %}
 <h1>Finanzen</h1>
+{% include "_refresh.html" %}
 <p class="muted">Wie viel kann ich bis {{ 'zum nächsten Gehalt' if d.mode == 'seit Gehaltseingang' else 'Monatsende' }} noch
 ausgeben, ohne ins Minus zu gehen? Grundlage: Kontoauszug des Hauptkontos (CAMT/CSV), Budgets je Kategorie und erkannte
 regelmäßige Einnahmen und Fixkosten.</p>
@@ -17,7 +18,8 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
 <div class="card">
   <div class="kpis">
     <div><div class="muted">Kontostand{% if d.as_of %} ({{ d.as_of.strftime('%d.%m.%Y') }}){% endif %}</div>
-      <div class="kpi" {% if d.balance is not none and d.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ d.balance|eur if d.balance is not none else '–' }}</div></div>
+      <div class="kpi" {% if d.balance is not none and d.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ d.balance|eur if d.balance is not none else '–' }}</div>
+      {% if d.pending_count %}<div class="muted">{{ d.pending_count }} vorgemerkt: {{ d.pending_sum|eur }} → verfügbar {{ (d.balance + d.pending_sum)|eur if d.balance is not none else '–' }}</div>{% endif %}</div>
     <div><div class="muted">Spielraum bis {{ d.end.strftime('%d.%m.') }}</div>
       <div class="kpi" style="color:{{ 'var(--danger)' if d.room is not none and d.room < 0 else 'var(--ok)' }}">{{ d.room|eur if d.room is not none else '–' }}</div>
       {% if d.per_day is not none and d.per_day > 0 %}<div class="muted">{{ d.per_day|eur }} pro Tag · noch {{ d.days_left }} Tage</div>
@@ -86,6 +88,7 @@ Export „XML (CAMT V8 – gebuchte Umsätze)“).</div>
   <div class="bank-line">
     <div class="bank-head"><b>{{ t.booking_date.strftime('%d.%m.') if t.booking_date else '' }}</b>
       <b style="color:{{ 'var(--ok)' if t.amount > 0 else 'inherit' }}">{{ t.amount|eur }}</b><span>{{ t.name }}</span>
+      {% if t.pending %}<span class="badge" style="background:#fef3c7;color:#92400e">vorgemerkt</span>{% endif %}
       {% if c %}<span class="badge" style="border-color:{{ c.color }}">{{ c.name }}{% if t.category_id %} ✎{% endif %}</span>{% endif %}</div>
     <div class="muted" style="font-size:12px">{{ t.purpose[:160] }}</div>
     <form method="post" action="/admin/finanzen/txn/{{ t.id }}" class="bank-actions">

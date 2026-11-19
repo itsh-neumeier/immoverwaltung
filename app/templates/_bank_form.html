@@ -23,8 +23,8 @@
   </div>
   {% endif %}
   <div class="grid">
-    <div class="check"><input type="checkbox" name="auto_sync" id="as{{ aid }}" {% if acc and acc.auto_sync %}checked{% endif %}><label for="as{{ aid }}" style="margin:0">Umsätze täglich automatisch abrufen</label></div>
-    <div><label>ab Uhrzeit</label><input type="number" name="sync_hour" min="0" max="23" value="{{ acc.sync_hour if acc else 7 }}" style="max-width:6rem"></div>
+    <div class="check"><input type="checkbox" name="auto_sync" id="as{{ aid }}" {% if acc and acc.auto_sync %}checked{% endif %}><label for="as{{ aid }}" style="margin:0">Umsätze und Salden automatisch abrufen</label></div>
+    <div><label>um … Uhr (Komma-getrennt)</label><input type="text" name="sync_times" value="{{ acc.sync_times if acc and acc.sync_times else '7,13,19' }}" style="max-width:10rem"></div>
     <div><label>Erster Abruf ab (leer = 90 Tage)</label><input type="date" name="sync_from" value="{{ acc.sync_from.isoformat() if acc and acc.sync_from else '' }}"></div>
   </div>
   <p class="muted">Etwa alle 90 Tage verlangt die Bank für den Umsatzabruf eine pushTAN-Freigabe – der automatische Abruf wartet dann bis zu 4 Minuten auf die Freigabe und meldet sich sonst per Push.</p>

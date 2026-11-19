@@ -154,23 +154,41 @@ class Matcher:
 
 
 # --------------------------------------------------------------------------- Import
-def ingest(s: Session, txns: list, balances: list) -> tuple[int, int]:
-    """Umsätze und Kontostände des Hauptkontos übernehmen (Dubletten werden erkannt). → (neu, vorhanden)"""
+def ingest(s: Session, txns: list, balances: list, snapshot: Optional[set] = None) -> tuple[int, int]:
+    """Umsätze und Kontostände des Hauptkontos übernehmen (Dubletten werden erkannt). → (neu, vorhanden)
+
+    Vorgemerkte Umsätze (FinTS) werden gespeichert und beim Buchen ersetzt (Kategorie bleibt). ``snapshot`` = Konten,
+    deren vorgemerkte Umsätze vollständig mitgeliefert wurden – dort verschwundene Vormerkungen werden entfernt."""
+    from .bankimport import match_pending
+
     iban = finance_iban(s)
     if not iban:
         return 0, 0
     seen = {d for (d,) in s.query(FinTxn.digest).filter(FinTxn.account_iban == iban)}
+    open_pending = s.query(FinTxn).filter(FinTxn.account_iban == iban, FinTxn.pending.is_(True)).all()
+    kept: set = set()
     new = dup = 0
     for t in txns:
         if sepa.normalize_iban(t.account_iban) != iban:
             continue
         if t.digest in seen:
+            kept |= {p.id for p in open_pending if p.digest == t.digest}
             dup += 1
             continue
         seen.add(t.digest)
+        old = None if t.pending else match_pending([p for p in open_pending if p.id not in kept], t)
+        if old is not None:  # Vormerkung ist jetzt gebucht → übernehmen
+            old.booking_date, old.amount, old.digest, old.pending = t.booking_date, t.amount, t.digest, False
+            old.name, old.iban, old.purpose = t.name[:200] or old.name, t.iban[:34] or old.iban, t.purpose[:2000]
+            open_pending.remove(old)
+            continue
         s.add(FinTxn(account_iban=iban, booking_date=t.booking_date, amount=t.amount, name=t.name[:200],
-                     iban=t.iban[:34], purpose=t.purpose[:2000], digest=t.digest))
+                     iban=t.iban[:34], purpose=t.purpose[:2000], digest=t.digest, pending=bool(t.pending)))
         new += 1
+    if snapshot and iban in snapshot:
+        for p in open_pending:
+            if p.id not in kept:
+                s.delete(p)  # nicht mehr vorgemerkt (gebucht unter anderem Text oder storniert)
     known = {(b.day, round(b.amount, 2)) for b in s.query(FinBalance).filter(FinBalance.account_iban == iban)}
     for b in balances:
         if b.kind == "CLBD" and b.day and sepa.normalize_iban(b.account_iban) == iban and (b.day, b.amount) not in known:
@@ -256,7 +274,9 @@ def overview(s: Session, today: Optional[date] = None) -> dict:
     txns = s.query(FinTxn).filter(FinTxn.account_iban == iban).order_by(FinTxn.booking_date, FinTxn.id).all() if iban else []
     bal = s.query(FinBalance).filter(FinBalance.account_iban == iban).order_by(FinBalance.day.desc()).first() if iban else None
     start, end, mode = period(s, today, txns, matcher)
-    as_of = bal.day if bal else (max((t.booking_date for t in txns if t.booking_date), default=today))
+    as_of = bal.day if bal else (max((t.booking_date for t in txns if t.booking_date and not t.pending), default=today))
+    pending = [t for t in txns if t.pending]
+    pending_sum = round(sum(t.amount for t in pending), 2)
     in_period = [t for t in txns if t.booking_date and start <= t.booking_date <= end]
 
     # Budgets
@@ -283,7 +303,8 @@ def overview(s: Session, today: Optional[date] = None) -> dict:
 
     # erwartete Eingänge/Fixkosten bis Periodenende (ab Stand des Kontoauszugs)
     rec = recurring(txns, matcher, start)
-    done_keys = {_key(t) for t in txns if t.booking_date and start <= t.booking_date <= as_of}
+    done_keys = {_key(t) for t in txns if t.booking_date and start <= t.booking_date <= as_of} | \
+        {_key(t) for t in pending}  # vorgemerkt = schon unterwegs
     expected = []
     for r in rec:
         if r["key"] in done_keys:
@@ -299,7 +320,7 @@ def overview(s: Session, today: Optional[date] = None) -> dict:
     balance = bal.amount if bal else None
     low, low_day, proj = None, None, None
     if balance is not None:
-        proj = low = balance
+        proj = low = balance + pending_sum  # vorgemerkte Umsätze sind im gebuchten Saldo noch nicht enthalten
         low_day = as_of
         for e in expected:
             proj += e["amount"]
@@ -319,7 +340,7 @@ def overview(s: Session, today: Optional[date] = None) -> dict:
             u["example"] = t
     top_unc = sorted(uncategorized.values(), key=lambda u: u["sum"])[:15]
     return {
-        "iban": iban, "balance": balance, "as_of": as_of, "start": start, "end": end, "mode": mode,
+        "iban": iban, "balance": balance, "as_of": as_of, "pending_sum": pending_sum, "pending_count": len(pending), "start": start, "end": end, "mode": mode,
         "budgets": budgets, "expected": expected, "exp_in": round(sum(e["amount"] for e in expected if e["amount"] > 0), 2),
         "exp_out": round(sum(e["amount"] for e in expected if e["amount"] < 0), 2), "low": low, "low_day": low_day,
         "proj_end": round(proj - budget_rest, 2) if proj is not None else None, "buffer": buffer, "room": room,
@@ -418,7 +439,9 @@ def finance_page(request: Request, show: str = "", s: Session = Depends(get_sess
     txns = data["txns"]
     if show == "offen":
         txns = [t for t in txns if data["matcher"].category(t) is None]
-    return _page(request, "finance.html", d=data, txns=txns, show=show, kinds=KINDS, st=st,
+    from .banking import refresh_info
+
+    return _page(request, "finance.html", bank_refresh=refresh_info(s), d=data, txns=txns, show=show, kinds=KINDS, st=st,
                  fmt_iban=sepa.format_iban, colors=COLORS)
 
 

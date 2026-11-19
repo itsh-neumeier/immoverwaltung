@@ -260,3 +260,5 @@ button.small{padding:3px 8px;font-size:.85rem}
 .ops span.no{opacity:.55;text-decoration:line-through}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin 1s linear infinite;vertical-align:-2px}
 @keyframes spin{to{transform:rotate(360deg)}}
+.refresh-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
+.refresh-bar button{margin:0}

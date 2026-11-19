@@ -47,6 +47,7 @@ class Building(Base):
     sepa_format: Mapped[str] = mapped_column(String(20), default="pain.001.001.09")
     reserve_owner: Mapped[bool] = mapped_column(Boolean, default=True)  # Anteil des Eigentümers mit zurücklegen
     # monatlicher Sammelauftrag per E-Mail (XML im Anhang)
+    fints_submit: Mapped[bool] = mapped_column(Boolean, default=True)  # neue Aufträge sofort per FinTS einreichen
     reserve_no_file: Mapped[bool] = mapped_column(Boolean, default=False)  # Rücklagenkonto: keine Datei-Übergabe (Sparkonto)
     sepa_mail: Mapped[bool] = mapped_column(Boolean, default=False)
     sepa_mail_to: Mapped[str] = mapped_column(String(300), default="")
@@ -129,7 +130,9 @@ class BankAccess(Base):
     accounts: Mapped[list] = mapped_column(JSON, default=list)  # Konten mit IBAN, Produkt, erlaubten Geschäftsvorfällen
     mechanisms: Mapped[list] = mapped_column(JSON, default=list)  # angebotene TAN-Verfahren
     auto_sync: Mapped[bool] = mapped_column(Boolean, default=False)
-    sync_hour: Mapped[int] = mapped_column(Integer, default=7)
+    sync_hour: Mapped[int] = mapped_column(Integer, default=7)  # alt (eine Uhrzeit)
+    sync_times: Mapped[str] = mapped_column(String(50), default="7,13,19")  # automatischer Abruf um … Uhr
+    last_slot: Mapped[str] = mapped_column(String(20), default="")  # zuletzt erledigter Abruf, z. B. 2026-11-19T13
     sync_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)  # Umsätze ab (erster Abruf)
     last_sync: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_auto: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -219,6 +222,7 @@ class FinTxn(Base):
     category_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # von Hand gesetzt (hat Vorrang)
     reserve_done: Mapped[str] = mapped_column(String(20), default="")  # Gutschrift aus Rücklage: erstattet | ignoriert
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    pending: Mapped[bool] = mapped_column(Boolean, default=False)  # vorgemerkt (noch nicht gebucht)
 
 
 class FinBalance(Base):
@@ -252,6 +256,7 @@ class BankLine(Base):
     digest: Mapped[str] = mapped_column(String(64), default="", index=True)  # gegen doppelten Import
     entry_ids: Mapped[list] = mapped_column(JSON, default=list)  # zugeordnete Rücklagen-Buchungen
     source: Mapped[str] = mapped_column(String(20), default="")  # camt.053.001.08, csv …
+    pending: Mapped[bool] = mapped_column(Boolean, default=False)  # vorgemerkt (noch nicht gebucht)
 
 
 class SepaExport(Base):

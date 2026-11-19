@@ -47,6 +47,7 @@ class Txn:
     ref: str = ""  # Bankreferenz (AcctSvcrRef/NtryRef) für Dubletten
     source: str = ""
     extra: dict = field(default_factory=dict)
+    pending: bool = False  # vorgemerkt (noch nicht gebucht)
 
     @property
     def digest(self) -> str:
@@ -95,7 +96,8 @@ def _iban(acct) -> str:
     return _text(acct, "Id", "IBAN")
 
 
-def parse_camt(data: bytes, balances: Optional[list] = None) -> list[Txn]:
+def parse_camt(data: bytes, balances: Optional[list] = None, include_pending: bool = False) -> list[Txn]:
+    """camt einlesen; vorgemerkte Umsätze (Status PDNG) nur mit ``include_pending`` (FinTS-Abruf)."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
@@ -116,12 +118,13 @@ def parse_camt(data: bytes, balances: Optional[list] = None) -> list[Txn]:
                 d = _child(bal, "Dt")
                 balances.append(Balance(own, _date(d) if d is not None else None, kind, round(float(amt.text) * sign, 2)))
         for ntry in _children(stmt, "Ntry"):
-            sts = _text(ntry, "Sts", "Cd") or _text(ntry, "Sts")
-            if sts and sts.upper() not in ("BOOK",):
+            sts = (_text(ntry, "Sts", "Cd") or _text(ntry, "Sts")).upper()
+            pending = sts in ("PDNG", "INFO", "FUTR")
+            if sts and sts != "BOOK" and not (include_pending and pending):
                 continue  # nur gebuchte Umsätze
             sign = -1 if _text(ntry, "CdtDbtInd") == "DBIT" else 1
             total = float(_text(ntry, "Amt") or 0) * sign
-            bdate = _date(_child(ntry, "BookgDt")) or _date(_child(ntry, "ValDt"))
+            bdate = _date(_child(ntry, "BookgDt")) or _date(_child(ntry, "ValDt")) or (date.today() if pending else None)
             info = _text(ntry, "AddtlNtryInf")
             nref = _text(ntry, "AcctSvcrRef") or _text(ntry, "NtryRef")
             details = _children(ntry, "NtryDtls")
@@ -132,7 +135,8 @@ def parse_camt(data: bytes, balances: Optional[list] = None) -> list[Txn]:
             if len(txs) > 1:
                 count = count or len(txs)
             if not txs:
-                out.append(Txn(own, bdate, round(total, 2), info, "", "", "", pmtinf, count, info, nref, source))
+                out.append(Txn(own, bdate, round(total, 2), info, "", "", "", pmtinf, count, info, nref, source,
+                               pending=pending))
                 continue
             for i, tx in enumerate(txs):
                 amt_el = _child(tx, "Amt")
@@ -150,7 +154,7 @@ def parse_camt(data: bytes, balances: Optional[list] = None) -> list[Txn]:
                     own, bdate, round(amt, 2), ustrd or info, _party_name(_child(rp, other[0])),
                     _iban(_child(rp, other[1])), "" if e2e == "NOTPROVIDED" else e2e,
                     pmtinf or _text(refs, "PmtInfId") or (_text(refs, "MsgId") if len(txs) > 1 else ""),
-                    count if len(txs) > 1 else 0, info, f"{nref}#{i}" if nref else "", source))
+                    count if len(txs) > 1 else 0, info, f"{nref}#{i}" if nref else "", source, pending=pending))
     if not out and not balances:
         raise ImportError_("Keine gebuchten Umsätze in der Datei gefunden.")
     return out
@@ -245,3 +249,22 @@ def parse(filename: str, data: bytes, balances: Optional[list] = None) -> list[T
     if head.startswith(b"<") or head.startswith(b"\xef\xbb\xbf<"):
         return parse_camt(data.lstrip(b"\xef\xbb\xbf \r\n\t"), balances)
     return parse_csv(data)
+
+
+# --------------------------------------------------------------------------- vorgemerkte Umsätze
+def _alnum(text: str, n: int) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (text or "").upper())[:n]
+
+
+def match_pending(rows: list, t: Txn):
+    """Gespeicherten vorgemerkten Umsatz finden, der jetzt (gebucht) wiederkommt: gleicher Betrag und Zweck,
+    sonst gleicher Betrag und Empfänger, sonst eindeutig gleicher Betrag innerhalb von 10 Tagen."""
+    same = [r for r in rows if round(r.amount, 2) == round(t.amount, 2)]
+    for key in (lambda x: _alnum(x.purpose, 24), lambda x: _alnum(x.name, 16)):
+        k = key(t)
+        if k:
+            hit = next((r for r in same if key(r) == k), None)
+            if hit is not None:
+                return hit
+    near = [r for r in same if not (r.booking_date and t.booking_date) or abs((r.booking_date - t.booking_date).days) <= 10]
+    return near[0] if len(near) == 1 else None

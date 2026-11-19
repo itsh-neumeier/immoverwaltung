@@ -312,13 +312,33 @@ def _building(s: Session, bid) -> Building:
     return next((b for b in blds if b.id == bid), blds[0])
 
 
-def _fints_ibans(s: Session) -> set:
-    """IBANs, für die ein FinTS-Bankzugang besteht (nur Super-Admins sehen den Bankzugang)."""
+def _fints_ibans(s: Session) -> dict:
+    """IBAN → PIN gespeichert? für Konten mit FinTS-Bankzugang (nur Super-Admins sehen den Bankzugang)."""
     if not scope.is_super():
-        return set()
+        return {}
     from .db import BankAccess
 
-    return {a.get("iban") for acc in s.query(BankAccess) for a in (acc.accounts or [])}
+    return {a.get("iban"): bool(acc.pin) for acc in s.query(BankAccess) for a in (acc.accounts or [])}
+
+
+def _bank_refresh(s: Session):
+    from .banking import refresh_info
+
+    return refresh_info(s)
+
+
+def _fints_now(request: Request, s: Session, bld: Building, ex: SepaExport, msg: str, back: str):
+    """Neuer Auftrag → gleich per FinTS einreichen (pushTAN-Freigabe), wenn eingerichtet. Sonst None."""
+    from . import banking
+
+    if banking.auto_submit_ready(s, bld, ex) is None:
+        return None
+    me = current(request)
+    try:
+        acc, job = banking.submit_export(s, ex, me.display if me else "", back=back)
+    except banking.BankError as e:
+        return _redirect(back, f"{msg} · Nicht per FinTS eingereicht: {e}")
+    return banking._job_redirect(acc, job, msg)
 
 
 @router.get("/admin/reserves", response_class=HTMLResponse)
@@ -370,7 +390,8 @@ def reserves_page(request: Request, building: int = 0, dl: int = 0, plan: int = 
                  .order_by(Building.sort, Building.id).all(), items=items, total=round(sum(i.amount for i in items), 2),
                  positions=positions(s, bld), names=names, plans=plans(s, bld), intervals=INTERVALS, balances=bal, entries=entries, exports=exports,
                  exec_date=default_exec_date(items), problems=problems, formats=sepa.FORMATS, kinds=KINDS,
-                 parties=parties, dl=dl, fmt_iban=sepa.format_iban, today=date.today(), fints=_fints_ibans(s))
+                 parties=parties, dl=dl, fmt_iban=sepa.format_iban, today=date.today(), fints=_fints_ibans(s),
+                 bank_refresh=_bank_refresh(s), refresh_back=f"/admin/reserves?building={bld.id}")
 
 
 @router.post("/admin/reserves/accounts")
@@ -393,6 +414,8 @@ async def save_accounts(request: Request, s: Session = Depends(get_session)):
     bld.reserve_start = start if re.fullmatch(r"\d{4}-\d{2}", start) else ""
     bld.reserve_owner = bool(form.get("reserve_owner"))
     bld.reserve_no_file = bool(form.get("reserve_no_file"))
+    if form.get("fints_form"):
+        bld.fints_submit = bool(form.get("fints_submit"))
     bld.sepa_mail = bool(form.get("sepa_mail"))
     bld.sepa_mail_to = ", ".join(a.strip() for a in re.split(r"[,;\s]+", str(form.get("sepa_mail_to", ""))) if "@" in a)[:300]
     day = str(form.get("sepa_mail_day", "25")).strip()
@@ -454,6 +477,9 @@ async def export(request: Request, s: Session = Depends(get_session)):
     except sepa.SepaError as e:
         return _redirect(f"/admin/reserves?building={bld.id}", f"SEPA-Datei nicht erzeugt: {e}")
     s.commit()
+    if (r := _fints_now(request, s, bld, ex, f"Sammelauftrag {len(items)} Überweisung(en), {_de(ex.total)} €",
+                        f"/admin/reserves?building={bld.id}")):
+        return r
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}",
                      f"SEPA-Datei erzeugt: {len(items)} Überweisung(en), {_de(ex.total)} € – jetzt im Online-Banking "
                      "unter „Datei-Übergabe“ hochladen.")
@@ -927,14 +953,20 @@ def _store_balances(bld: Building, balances: list, ibans: dict) -> None:
             bld.bank_reserve_open, bld.bank_reserve_open_date = b.amount, b.day
 
 
-def ingest_bank(s: Session, bld: Building, txns: list, bals: list, since: Optional[date] = None) -> str:
-    """Umsätze/Kontostände eines Auszugs für den Rücklagen-Abgleich übernehmen; liefert eine Rückmeldung."""
+def ingest_bank(s: Session, bld: Building, txns: list, bals: list, since: Optional[date] = None,
+                snapshot: Optional[set] = None) -> str:
+    """Umsätze/Kontostände eines Auszugs für den Rücklagen-Abgleich übernehmen; liefert eine Rückmeldung.
+    Vorgemerkte Umsätze (FinTS) werden beim Buchen ersetzt – Zuordnungen bleiben erhalten."""
+    from .bankimport import match_pending
     main_iban, reserve_iban = sepa.normalize_iban(bld.account_iban), sepa.normalize_iban(bld.reserve_iban)
     accounts_ = {main_iban: "main", reserve_iban: "reserve"}
     accounts_.pop("", None)
     _store_balances(bld, bals, accounts_)
     new = skipped = foreign = irrelevant = old = 0
     seen = {d for (d,) in s.query(BankLine.digest).filter(BankLine.building_id == bld.id)}
+    open_pending = s.query(BankLine).filter(BankLine.building_id == bld.id, BankLine.pending.is_(True)).all()
+    kept: set = set()
+    upgraded = 0
     for t in txns:
         acc = accounts_.get(sepa.normalize_iban(t.account_iban))
         if acc is None:
@@ -948,16 +980,33 @@ def ingest_bank(s: Session, bld: Building, txns: list, bals: list, since: Option
             irrelevant += 1  # Hauptkonto: nur Umsätze mit Bezug zum Rücklagenkonto bzw. aus App-Dateien
             continue
         if t.digest in seen:
+            kept |= {p.id for p in open_pending if p.digest == t.digest}
             skipped += 1
             continue
         seen.add(t.digest)
-        s.add(BankLine(building_id=bld.id, account=acc, booking_date=t.booking_date, amount=t.amount,
+        old = None if t.pending else match_pending([p for p in open_pending if p.account == acc and p.id not in kept], t)
+        if old is not None:  # Vormerkung jetzt gebucht → Zeile übernehmen (Zuordnung bleibt)
+            old.booking_date, old.amount, old.digest, old.pending = t.booking_date, t.amount, t.digest, False
+            old.purpose, old.e2e, old.pmtinf = t.purpose[:2000], t.e2e[:100] or old.e2e, t.pmtinf[:100] or old.pmtinf
+            old.name, old.iban, old.info, old.source = t.name[:200] or old.name, t.iban[:34] or old.iban, t.info[:100], t.source[:20]
+            open_pending.remove(old)
+            upgraded += 1
+            continue
+        s.add(BankLine(building_id=bld.id, pending=bool(t.pending), account=acc, booking_date=t.booking_date, amount=t.amount,
                        purpose=t.purpose[:2000], name=t.name[:200], iban=t.iban[:34], e2e=t.e2e[:100],
                        pmtinf=t.pmtinf[:100], batch_count=t.batch_count, info=t.info[:100], digest=t.digest,
                        source=t.source[:20]))
         new += 1
+    ibans_ = {i for i, a in accounts_.items()}
+    if snapshot and ibans_ & snapshot:
+        for p in open_pending:
+            acc_iban = next((i for i, a in accounts_.items() if a == p.account), "")
+            if p.id not in kept and acc_iban in snapshot and not p.entry_ids:
+                s.delete(p)  # Vormerkung verschwunden (anders gebucht oder storniert)
     s.commit()
     msg = f"{new} Umsätze eingelesen"
+    if upgraded:
+        msg += f", {upgraded} Vormerkungen jetzt gebucht"
     if old:
         msg += f", {old} vor dem gewählten Datum übersprungen"
     if irrelevant:
@@ -1169,7 +1218,7 @@ def open_refunds(s: Session, bld: Building) -> list[dict]:
         pool[e.ref].append([e, -e.amount])
     rows = []
     own = {sepa.normalize_iban(x) for x in (bld.account_iban, bld.reserve_iban, iban) if x}
-    for t in s.query(FinTxn).filter(FinTxn.account_iban == iban, FinTxn.amount < 0, FinTxn.reserve_done == "") \
+    for t in s.query(FinTxn).filter(FinTxn.account_iban == iban, FinTxn.amount < 0, FinTxn.reserve_done == "", FinTxn.pending.isnot(True)) \
             .order_by(FinTxn.booking_date, FinTxn.id):
         if sepa.normalize_iban(t.iban) in own:
             continue  # Umbuchung zwischen eigenen Konten ist keine Rechnung
@@ -1234,10 +1283,14 @@ async def refunds_export(request: Request, s: Session = Depends(get_session)):
         ex.manual, ex.token = True, new_token(s)
         ex.manual_purpose = manual_purpose(ex, [(r["purpose"], r["amount"]) for r in rows])
         s.commit()
+        if (r := _fints_now(request, s, bld, ex, f"Gutschrift {len(rows)} Posten, {_de(ex.total)} €", back)):
+            return r
         return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
                          f"Gutschrift vorbereitet: {len(rows)} Posten, {_de(ex.total)} € – bitte als eine Überweisung "
                          "vom Rücklagenkonto aufs Hauptkonto ausführen (Vorlage oben).")
     s.commit()
+    if (r := _fints_now(request, s, bld, ex, f"Gutschriften {len(rows)} Posten, {_de(ex.total)} €", back)):
+        return r
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
                      f"Sammelauftrag Gutschriften erzeugt: {len(rows)} Überweisung(en), {_de(ex.total)} € – im "
                      "Online-Banking des Rücklagenkontos hochladen, nach Ausführung bestätigen.")
@@ -1355,7 +1408,15 @@ def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: 
     if not force and (not bld.sepa_mail or today.day < (bld.sepa_mail_day or 25) or bld.sepa_mail_last == ym):
         return None
     to = _mail_recipients(s, bld)
-    if not to:
+    fints_ok = False
+    try:
+        from . import banking, secretbox
+
+        acc_ = banking.access_for_iban(s, bld.account_iban) if bld.fints_submit else None
+        fints_ok = bool(acc_ and secretbox.maybe_decrypt(acc_.pin or ""))
+    except Exception:  # noqa: BLE001
+        fints_ok = False
+    if not to and not fints_ok:
         raise sepa.SepaError("Keine E-Mail-Adresse für den Versand (beim Gebäude oder beim Super-Admin hinterlegen).")
     existing = None
     if bld.sepa_mail_last == ym:  # erneut senden: dieselbe Datei, keine zweite
@@ -1373,47 +1434,57 @@ def monthly_run(s: Session, bld: Building, today: Optional[date] = None, force: 
         ex = existing
         lines = [(e.name, e.amount) for e in s.query(ReserveEntry).filter(ReserveEntry.export_id == ex.id)]
     refunds = [r for r in open_refunds(s, bld) if not r["probable"] and r["amount"] >= 0.01]
+    via_fints = fints_ok and ex.status != "done"
     base = config_base()
     facts = [("Monat", f"{target:%m/%Y}", True), ("Ausführung", f"{ex.exec_date:%d.%m.%Y}", True),
              ("Überweisungen", str(ex.count), False), ("Summe", f"{_de(ex.total)} €", True),
              ("Datei", ex.filename, False)]
-    fints_hint = ""
-    try:
-        from . import banking
-
-        if banking.access_for_iban(s, bld.account_iban) is not None:
-            fints_hint = (" Schneller: in der App unter Finanzen → Bankzugang (FinTS) „Terminiert einreichen“ und per "
-                          "pushTAN freigeben – dann wird der Auftrag automatisch als ausgeführt bestätigt.")
-    except Exception:  # noqa: BLE001
-        pass
-    paragraphs = ["anbei der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für den kommenden Monat." + fints_hint,
-                  "Im Online-Banking des Hauptkontos unter „Datei-Übergabe“ hochladen, Summe und Ausführungsdatum prüfen "
-                  "und freigeben. Nach der Ausführung in der App bestätigen – oder einfach den nächsten Kontoauszug "
-                  "einlesen, dann wird die Datei automatisch als ausgeführt erkannt.",
-                  "Aufstellung: " + "; ".join(f"{n} {_de(a)} €" for n, a in lines)]
+    if via_fints:
+        paragraphs = [f"der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für {target:%m/%Y} wird jetzt "
+                      "automatisch per FinTS als Terminüberweisung eingereicht – bitte die pushTAN in der S-pushTAN-App "
+                      "freigeben (innerhalb von 4 Minuten). Danach ist der Auftrag in der App als ausgeführt bestätigt.",
+                      "Die Datei bitte NICHT zusätzlich im Online-Banking hochladen. Freigabe verpasst? Unter Finanzen → "
+                      "Bankzugang erneut einreichen.",
+                      "Aufstellung: " + "; ".join(f"{n} {_de(a)} €" for n, a in lines)]
+    else:
+        paragraphs = ["anbei der SEPA-Sammelauftrag Rücklagen (Hauptkonto → Rücklagenkonto) für den kommenden Monat.",
+                      "Im Online-Banking des Hauptkontos unter „Datei-Übergabe“ hochladen, Summe und Ausführungsdatum prüfen "
+                      "und freigeben. Nach der Ausführung in der App bestätigen – oder einfach den nächsten Kontoauszug "
+                      "einlesen, dann wird die Datei automatisch als ausgeführt erkannt.",
+                      "Aufstellung: " + "; ".join(f"{n} {_de(a)} €" for n, a in lines)]
     if refunds:
         paragraphs.append(f"Außerdem sind {len(refunds)} Gutschrift(en) über {_de(sum(r['amount'] for r in refunds))} € "
                           "aus der Rücklage aufs Hauptkonto offen – unter „Rücklagen → Offene Gutschriften“ prüfen und "
-                          + ("die Überweisungsvorlage erzeugen (eine Überweisung vom Rücklagenkonto)."
+                          + ("per FinTS einreichen (pushTAN)." if via_fints else
+                             "die Überweisungsvorlage erzeugen (eine Überweisung vom Rücklagenkonto)."
                              if bld.reserve_no_file else "den Sammelauftrag Gutschriften erzeugen."))
-    html = mailer.render_html(title=f"Sammelauftrag Rücklagen {target:%m/%Y}", preheader=f"{_de(ex.total)} € am "
-                              f"{ex.exec_date:%d.%m.%Y}", facts=facts, paragraphs=["Hallo,"] + paragraphs,
-                              closing="Viele Grüße\nImmoVerwaltung",
-                              button_url=(f"{base}/admin/bank#auftraege" if fints_hint else
-                                          f"{base}/admin/reserves?building={bld.id}") if base else "",
-                              button_label="Per FinTS einreichen" if fints_hint else "Zu den Rücklagen", footer=bld.label)
-    text = "Hallo,\n\n" + "\n\n".join(paragraphs) + "\n\n" + "\n".join(f"{k}: {v}" for k, v, _ in facts)
-    mailer.send_mail(to, f"SEPA-Sammelauftrag Rücklagen {target:%m/%Y}: {_de(ex.total)} € ({bld.label})", text,
-                     [(ex.filename, ex.xml.encode("utf-8"), "application/xml")], html=html)
+    if to and (not via_fints or mailer.configured()):
+        html = mailer.render_html(title=f"Sammelauftrag Rücklagen {target:%m/%Y}", preheader=f"{_de(ex.total)} € am "
+                                  f"{ex.exec_date:%d.%m.%Y}", facts=facts, paragraphs=["Hallo,"] + paragraphs,
+                                  closing="Viele Grüße\nImmoVerwaltung",
+                                  button_url=(f"{base}/admin/bank#auftraege" if via_fints else
+                                              f"{base}/admin/reserves?building={bld.id}") if base else "",
+                                  button_label="Zum Bankzugang" if via_fints else "Zu den Rücklagen", footer=bld.label)
+        text = "Hallo,\n\n" + "\n\n".join(paragraphs) + "\n\n" + "\n".join(f"{k}: {v}" for k, v, _ in facts)
+        mailer.send_mail(to, f"SEPA-Sammelauftrag Rücklagen {target:%m/%Y}: {_de(ex.total)} € ({bld.label})"
+                         + (" – per FinTS" if via_fints else ""), text,
+                         [] if via_fints else [(ex.filename, ex.xml.encode("utf-8"), "application/xml")], html=html)
     bld.sepa_mail_last = ym
     s.commit()
+    if via_fints:
+        from . import banking
+
+        banking.submit_background(ex.id, f"Sammelauftrag Rücklagen {target:%m/%Y}")
     try:
         notify.to_admins(s, "push_admin_sent", f"Sammelauftrag Rücklagen {target:%m/%Y}",
-                         f"{_de(ex.total)} € · {ex.count} Überweisungen · per E-Mail an {', '.join(to)}",
-                         url=f"/admin/reserves?building={bld.id}", tag=f"sepa-{ym}")
+                         f"{_de(ex.total)} € · {ex.count} Überweisungen · "
+                         + ("jetzt per pushTAN freigeben" if via_fints else f"per E-Mail an {', '.join(to)}"),
+                         url="/admin/bank#auftraege" if via_fints else f"/admin/reserves?building={bld.id}",
+                         tag=f"sepa-{ym}")
     except Exception:  # noqa: BLE001
         pass
-    return f"Sammelauftrag {target:%m/%Y} ({_de(ex.total)} €, {ex.count} Überweisungen) per E-Mail an {', '.join(to)} gesendet."
+    how = "per FinTS eingereicht (pushTAN freigeben)" if via_fints else f"per E-Mail an {', '.join(to)} gesendet"
+    return f"Sammelauftrag {target:%m/%Y} ({_de(ex.total)} €, {ex.count} Überweisungen) {how}."
 
 
 def config_base() -> str:

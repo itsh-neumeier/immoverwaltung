@@ -1,0 +1,8 @@
+{% if bank_refresh %}
+<form method="post" action="/admin/bank/refresh" class="refresh-bar">
+  <input type="hidden" name="back" value="{{ refresh_back or request.url.path }}">
+  {% if not bank_refresh.pin %}<input type="password" name="pin" placeholder="Bank-PIN" autocomplete="off" required style="max-width:9rem">{% endif %}
+  <button class="sec">🔄 Jetzt aktualisieren</button>
+  <span class="muted">{% if bank_refresh.last %}Stand {{ bank_refresh.last.strftime('%d.%m. %H:%M') }}{% else %}noch nicht abgerufen{% endif %}{% if bank_refresh.auto %} · automatisch um {{ bank_refresh.auto }} Uhr{% endif %}</span>
+</form>
+{% endif %}

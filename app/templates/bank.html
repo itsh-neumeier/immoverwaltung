@@ -2,13 +2,14 @@
 {% block title %}Bankzugang (FinTS){% endblock %}
 {% block content %}
 <h1>Bankzugang (FinTS)</h1>
+{% include "_refresh.html" %}
 <p class="muted">Direkte Verbindung zur Bank per FinTS (PIN/TAN): Umsätze und Kontostände abrufen (statt CAMT-Datei hochladen),
 SEPA-Aufträge der App einreichen und Überträge zwischen den eigenen Konten – jeder Auftrag wird mit TAN freigegeben
 (S-pushTAN: in der App bestätigen).</p>
 
 {# ---------------------------------------------------------------- laufender Vorgang (TAN / Empfängerprüfung) #}
 {% for a in accesses %}{% set j = jobs.get(a.id) %}{% if j and j.waiting %}{% set info = j.challenge_info() %}
-<div class="card challenge" id="vorgang" data-poll="{{ '/admin/bank/job/%d/poll'|format(a.id) if info.type == 'decoupled' else '' }}">
+<div class="card challenge" id="vorgang" data-poll="{{ '/admin/bank/job/%d/poll'|format(a.id) if info.type == 'decoupled' else '' }}" data-back="{{ j.params.get('back') or '/admin/bank' }}">
   <h2 style="margin-top:0">🔐 {{ j.title }} – {{ a.name }}</h2>
   {% if info.type == 'vop' %}
     <p><b>Empfängerprüfung:</b> {{ info.text }}{% if info.close_name %} – bei der Bank hinterlegt: <b>{{ info.close_name }}</b>{% endif %}{% if info.reason %} ({{ info.reason }}){% endif %}</p>
@@ -60,14 +61,14 @@ Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#ei
       <td><b>{{ fmt_iban(x.iban) }}</b>{% if x.owner %}<br><span class="muted">{{ x.owner }}</span>{% endif %}</td>
       <td>{{ x.type or '–' }}{% if x.product %}<br><span class="muted">{{ x.product }}</span>{% endif %}</td>
       <td>{% for r in roles.get(x.iban, []) %}<div>{{ r }}</div>{% else %}<span class="muted">–</span>{% endfor %}</td>
-      <td class="r">{% if x.balance is defined %}<span {% if x.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ de(x.balance) }} €</span><br><span class="muted">{{ x.balance_date[8:10] }}.{{ x.balance_date[5:7] }}.</span>{% else %}–{% endif %}</td>
+      <td class="r">{% if x.balance is defined %}<span {% if x.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ de(x.balance) }} €</span>{% if x.pending_count %}<br><span class="muted" title="vorgemerkt, noch nicht gebucht">{{ x.pending_count }} vorgemerkt {{ de(x.pending) }} €</span>{% endif %}<br><span class="muted">{{ x.balance_date[8:10] }}.{{ x.balance_date[5:7] }}.</span>{% else %}–{% endif %}</td>
       <td class="ops">{% if x.ops %}{% for code, label in ops_names.items() %}<span class="{{ 'ok' if code in x.ops else 'no' }}" title="{{ code }}">{{ label }}</span>{% endfor %}{% else %}<span class="muted">Bank nennt keine Liste</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table></div>
   <p class="muted">Durchgestrichen = laut Bank per FinTS für dieses Konto nicht erlaubt (z. B. Überweisungen vom Sparkonto) – dann bleibt dort der Weg über die manuelle Überweisung mit Kennung.</p>
   {% endif %}
-  {% if a.last_sync %}<p class="muted">Letzter Umsatzabruf: {{ a.last_sync.strftime('%d.%m.%Y %H:%M') }}{% if a.auto_sync %} · täglich automatisch ab {{ a.sync_hour }} Uhr{% endif %}</p>{% endif %}
+  {% if a.last_sync %}<p class="muted">Letzter Umsatzabruf: {{ a.last_sync.strftime('%d.%m.%Y %H:%M') }}{% if a.auto_sync %} · automatisch um {{ (a.sync_times or '7,13,19').replace(',', ', ') }} Uhr{% endif %}</p>{% endif %}
 
   <form method="post" class="inline-actions">
     {% if not a.pin %}<input type="password" name="pin" placeholder="PIN" autocomplete="off" required style="max-width:12rem">{% endif %}
@@ -168,7 +169,8 @@ Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#ei
     n++; if (n > 100) return;
     try { const r = await fetch(box.dataset.poll, {cache: 'no-store'}); const d = await r.json();
       if (d.state === 'waiting') { setTimeout(tick, 3000); return; }
-      location.href = '/admin/bank?msg=' + encodeURIComponent(d.message || 'Erledigt');
+      const back = box.dataset.back || '/admin/bank', [path, hash] = back.split('#');
+      location.href = path + (path.includes('?') ? '&' : '?') + 'msg=' + encodeURIComponent(d.message || 'Erledigt') + (hash ? '#' + hash : '');
     } catch (e) { setTimeout(tick, 5000); } };
   setTimeout(tick, 3000); })();
 </script>

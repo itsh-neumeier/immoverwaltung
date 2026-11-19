@@ -2,6 +2,7 @@
 {% block title %}Rücklagen{% endblock %}
 {% block content %}
 <h1>Rücklagen</h1>
+{% include "_refresh.html" %}
 <p class="muted">Für Kosten, die die Mieter monatlich zahlen, deren Rechnung aber erst später kommt (z. B. Wassergeld, IPTV,
 Kaminkehrer): je abgeschlossener Abrechnung, Partei und Position eine Überweisung vom Girokonto aufs Rücklagenkonto –
 als <b>SEPA-Datei</b> zum Hochladen im Online-Banking („Datei-Übergabe“).</p>
@@ -81,6 +82,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
     <div class="check"><input type="checkbox" name="reserve_no_file" id="rl-nofile" {% if bld.reserve_no_file %}checked{% endif %}><label for="rl-nofile" style="margin:0">Rücklagenkonto ohne Datei-Übergabe (Sparkonto): Gutschriften als <b>eine Überweisung von Hand</b> statt XML-Datei</label></div>
+    {% if fints %}<input type="hidden" name="fints_form" value="1">
+    <div class="check"><input type="checkbox" name="fints_submit" id="rl-fints-a" {% if bld.fints_submit is not false %}checked{% endif %}><label for="rl-fints-a" style="margin:0">🏦 Neue Aufträge (Sammelauftrag, Gutschriften, Monatslauf) <b>sofort per FinTS einreichen</b> – nur noch per pushTAN freigeben</label></div>{% endif %}
     <h3>Monatlicher Sammelauftrag per E-Mail</h3>
     <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
     <div class="grid">
@@ -316,7 +319,10 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     {% else %}
       <span class="badge" style="background:#fef3c7;color:#92400e">⏳ wartet auf Ausführung</span>
       {% set debtor_iban = (bld.account_iban if ex.kind == 'in' else bld.reserve_iban)|replace(' ', '')|upper %}
-      {% if debtor_iban in fints %}<a class="btn" href="/admin/bank#auftraege" style="margin-top:4px">🏦 Per FinTS einreichen</a>{% endif %}
+      {% if debtor_iban in fints %}<form method="post" action="/admin/bank/export/{{ ex.id }}" style="display:flex;gap:6px;align-items:center;margin-top:4px">
+        <input type="hidden" name="back" value="/admin/reserves?building={{ bld.id }}">
+        {% if not fints[debtor_iban] %}<input type="password" name="pin" placeholder="Bank-PIN" autocomplete="off" required style="max-width:9rem">{% endif %}
+        <button>🏦 Per FinTS einreichen</button>{% if ex.exec_date and ex.exec_date > today and not ex.manual %}<button class="sec" name="now" value="1">sofort</button>{% endif %}</form>{% endif %}
       <form method="post" action="/admin/reserves/export/{{ ex.id }}/confirm" style="display:flex;gap:6px;align-items:center;margin-top:4px">
         <input type="date" name="executed_on" value="{{ (ex.exec_date or today).isoformat() }}" style="width:auto" aria-label="ausgeführt am">
         <button>✓ Ausgeführt</button></form>
@@ -366,7 +372,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
   <div class="bank-line">
     <div class="bank-head">
       <span class="badge">{{ 'Hauptkonto' if l.account == 'main' else 'Rücklagenkonto' }}</span>
-      <b>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</b>
+      <b>{{ l.booking_date.strftime('%d.%m.%Y') if l.booking_date else '' }}</b>{% if l.pending %} <span class="badge" style="background:#fef3c7;color:#92400e">vorgemerkt</span>{% endif %}
       <b style="color:{{ 'var(--ok)' if l.amount > 0 else 'var(--danger)' }}">{{ l.amount|eur }}</b>
       <span>{{ l.name }}</span>
     </div>
@@ -449,6 +455,8 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     </div>
     <div class="check"><input type="checkbox" name="reserve_owner" id="rl-own" {% if bld.reserve_owner %}checked{% endif %}><label for="rl-own" style="margin:0">Anteil des Eigentümers ebenfalls zurücklegen (Verwendungszweck „EIGENTUEMER …“)</label></div>
     <div class="check"><input type="checkbox" name="reserve_no_file" id="rl-nofile" {% if bld.reserve_no_file %}checked{% endif %}><label for="rl-nofile" style="margin:0">Rücklagenkonto ohne Datei-Übergabe (Sparkonto): Gutschriften als <b>eine Überweisung von Hand</b> statt XML-Datei</label></div>
+    {% if fints %}<input type="hidden" name="fints_form" value="1">
+    <div class="check"><input type="checkbox" name="fints_submit" id="rl-fints-b" {% if bld.fints_submit is not false %}checked{% endif %}><label for="rl-fints-b" style="margin:0">🏦 Neue Aufträge (Sammelauftrag, Gutschriften, Monatslauf) <b>sofort per FinTS einreichen</b> – nur noch per pushTAN freigeben</label></div>{% endif %}
     <h3>Monatlicher Sammelauftrag per E-Mail</h3>
     <div class="check"><input type="checkbox" name="sepa_mail" id="rl-mail" {% if bld.sepa_mail %}checked{% endif %}><label for="rl-mail" style="margin:0">jeden Monat die SEPA-Datei (XML) für den Folgemonat per E-Mail schicken</label></div>
     <div class="grid">

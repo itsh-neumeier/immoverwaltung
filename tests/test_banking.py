@@ -1,7 +1,7 @@
 """FinTS-Anbindung mit einer simulierten Bank (keine echte Verbindung)."""
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -48,6 +48,8 @@ class FakeBank:
                                 None, ("2026-10-30", 1000.0))}
         self.tans = []
         self.giro_debit = False
+        self.pending = {}
+        self.fetches = 0
 
 
 BANK = FakeBank()
@@ -98,10 +100,12 @@ class FakeClient:
         return [SEPAAccount(i, "BYLADEM1001", "123", None, "37040044") for i in BANK.ops]
 
     def get_transactions_xml(self, account, start, end):
+        BANK.fetches += 1
         if BANK.fetch_tan and self._pending is None:
             self._pending = ("fetch", account)
             return BANK.fetch_tan
-        return [BANK.camt.get(account.iban, b"")] if BANK.camt.get(account.iban) else [], []
+        booked = [BANK.camt[account.iban]] if BANK.camt.get(account.iban) else []
+        return booked, [BANK.pending[account.iban]] if BANK.pending.get(account.iban) else [None]
 
     def get_balance(self, account):
         from mt940.models import Balance  # wie python-fints: Soll-Saldo mit Status „D“
@@ -339,3 +343,129 @@ def test_cancel_and_wrong_pin_message():
         r = c.post(f"/admin/bank/job/{aid}", data={"cancel": "1"})
         assert "abgebrochen" in r.text and banking.current_job(aid) is None
         assert re.search(r"Vorgang abgebrochen", c.get("/admin/bank").text)
+
+
+def _pdng(own, entries):
+    return camt(own, entries).replace(b"<Cd>BOOK</Cd>", b"<Cd>PDNG</Cd>").replace(b"<BookgDt><Dt>2026-10-30</Dt></BookgDt>", b"")
+
+
+def _connect(c):
+    c.post("/admin/bank/access/0", data={"name": "Sparkasse", "blz": "37040044", "login": "user1",
+                                          "server": "https://fints.example/fints30", "pin": "geheim",
+                                          "store_pin": "1", "connect": "1"})
+    with SessionLocal() as s:
+        return s.query(BankAccess).one().id
+
+
+def test_pending_refresh_and_booking_replaces_pending():
+    from app import finance
+    from app.db import FinCategory
+
+    with TestClient(app) as c:
+        _prepare(c)
+        aid = _connect(c)
+        amazon = {"amount": -19.99, "purpose": "AMAZON MKTP DE 123", "name": "AMAZON", "other": SPAR, "date": "2026-11-18"}
+        BANK.pending[GIRO] = _pdng(GIRO, [amazon])
+        assert "Jetzt aktualisieren" in c.get("/admin/finanzen").text
+        r = c.post("/admin/bank/refresh", data={"back": "/admin/finanzen"})
+        assert r.url.path == "/admin/finanzen" and "1 Umsätze + 1 vorgemerkt abgerufen" in r.text
+        assert "vorgemerkt" in r.text
+        with SessionLocal() as s:
+            p = s.query(FinTxn).filter(FinTxn.pending.is_(True)).one()
+            pid = p.id
+            cat = s.query(FinCategory).first()
+            p.category_id = cat.id  # von Hand zugeordnet → bleibt nach dem Buchen
+            s.commit()
+            d = finance.overview(s)
+            assert d["pending_count"] == 1 and d["pending_sum"] == -19.99
+            assert banking.find_account(s.get(BankAccess, aid), GIRO)["pending_count"] == 1
+        # jetzt gebucht: Vormerkung wird ersetzt, keine Dublette
+        BANK.pending = {}
+        BANK.camt[GIRO] = camt(GIRO, [{"amount": -42.5, "purpose": "REWE SAGT DANKE", "name": "REWE", "other": SPAR},
+                                      {**amazon, "date": "2026-11-19"}], None, ("2026-11-19", 957.51))
+        c.post("/admin/bank/refresh", data={"back": "/admin/finanzen"})
+        with SessionLocal() as s:
+            rows = s.query(FinTxn).order_by(FinTxn.id).all()
+            assert len(rows) == 2 and not any(r.pending for r in rows)
+            a = s.get(FinTxn, pid)
+            assert a.booking_date == date(2026, 11, 19) and a.category_id == cat.id
+        # storniert: Vormerkung verschwindet beim nächsten Abruf
+        BANK.pending[GIRO] = _pdng(GIRO, [{"amount": -5.0, "purpose": "KIOSK", "name": "KIOSK", "other": SPAR}])
+        c.post("/admin/bank/refresh", data={})
+        BANK.pending = {}
+        c.post("/admin/bank/refresh", data={})
+        with SessionLocal() as s:
+            assert s.query(FinTxn).count() == 2
+
+
+def test_order_then_accounts_refreshed_and_sync_slots():
+    with TestClient(app) as c:
+        _prepare(c)
+        aid = _connect(c)
+        before = BANK.fetches
+        r = c.post("/admin/bank/transfer", data={"from": GIRO, "to": SPAR, "amount": "10", "purpose": "SPAREN"})
+        assert "eingereicht" in r.text and "Konten aktualisiert" in r.text and BANK.fetches == before + 2
+    with SessionLocal() as s:
+        acc = s.get(BankAccess, aid)
+        acc.sync_times = "7,13,19"
+        assert banking.due_slot(acc, datetime(2026, 11, 19, 6, 30)) is None
+        assert banking.due_slot(acc, datetime(2026, 11, 19, 14, 5)) == "2026-11-19T13"
+        acc.last_slot = "2026-11-19T13"
+        assert banking.due_slot(acc, datetime(2026, 11, 19, 18, 59)) is None
+        assert banking.due_slot(acc, datetime(2026, 11, 19, 19, 0)) == "2026-11-19T19"
+
+
+def test_monthly_run_submits_via_fints(monkeypatch):
+    import smtplib
+    import time
+
+    from app import reserves
+    from app.db import ReservePlan
+
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def starttls(self, **kw):
+            pass
+
+        def login(self, *a):
+            pass
+
+        def send_message(self, msg, to_addrs=None):
+            sent.append(msg)
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(banking, "BACKGROUND_POLL", 0.05)
+    with TestClient(app) as c:
+        bid = _prepare(c)
+        _connect(c)
+        with SessionLocal() as s:
+            b = s.get(Building, bid)
+            b.sepa_mail, b.sepa_mail_to = True, "timo@example.test"
+            s.add(ReservePlan(building_id=bid, name="Immobilie · Grundsteuer", label="GRUNDSTEUER", annual_amount=600,
+                              interval=1, start="2026-12", funding="sepa", category="immobilie", active=True))
+            s.commit()
+        BANK.pay_challenges = [FakeTAN(decoupled=True)]
+        BANK.polls_pending = 2  # pushTAN erst nach zwei Abfragen freigegeben
+        with SessionLocal() as s:
+            msg = reserves.monthly_run(s, s.get(Building, bid), today=date(2026, 11, 25), force=True)
+        assert "per FinTS eingereicht" in msg
+        for _ in range(100):
+            with SessionLocal() as s:
+                ex = s.query(SepaExport).one()
+                if ex.status == "done":
+                    break
+            time.sleep(0.05)
+        assert ex.status == "done" and ex.confirmed_by.startswith("FinTS")
+        assert BANK.sent[-1]["seg"] == "HKCSE" and "GRUNDSTEUER" in BANK.sent[-1]["xml"]  # eine Zuführung → Termin-Einzelüberweisung
+        mail = sent[-1]
+        assert "per FinTS" in mail["Subject"] and not any((p.get_filename() or "").endswith(".xml") for p in mail.walk())
