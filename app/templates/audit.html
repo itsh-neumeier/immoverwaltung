@@ -33,8 +33,47 @@ verzerrt, Zeitangaben relativ. Die Antwort wird in der App wieder den echten Tö
     </div>
     {% if f.refs %}<div class="muted" style="font-size:.9rem">betrifft: {{ f.refs|join(', ') }}</div>{% endif %}
     <p style="margin:.4em 0">{{ f.beschreibung }}</p>
-    {% if f.werte %}<div class="finding-values">{% for w in f.werte %}<span>{{ w.bezeichnung }}: <b {% if w.betrag < 0 %}style="color:var(--danger)"{% endif %}>{{ de(w.betrag) }} €</b></span>{% endfor %}</div>{% endif %}
+    {% if f.werte %}<div class="finding-values">{% for w in f.werte %}{% set u = w.einheit or 'eur' %}<span>{{ w.bezeichnung }}: <b {% if u == 'eur' and w.betrag < 0 %}style="color:var(--danger)"{% endif %}>{% if u == 'eur' %}{{ de(w.betrag) }} €{% elif u == 'prozent' %}{{ '%.0f'|format(w.betrag) }} %{% elif u == 'tage' %}{{ w.betrag|int }} Tage{% elif u == 'monate' %}{{ w.betrag|int }} Monate{% else %}{{ w.betrag|int }}{% endif %}</b></span>{% endfor %}</div>{% endif %}
     {% if f.massnahme %}<p style="margin:.4em 0"><b>→</b> {{ f.massnahme }}</p>{% endif %}
+    {% set fi = loop.index0 %}
+    {% for a in f.aktionen or [] %}
+      {% set back = '/admin/pruefung/%d#b%d'|format(rep.id, fi) %}
+      {% if a.typ == 'topf_auffuellen' %}
+        {% set cur = (pots.get(a.building, [])|selectattr(0, 'equalto', a.ref)|list|first) %}
+        {% set stand = cur[2] if cur else 0 %}
+        {% set need = (-stand) if stand < 0 else 0 %}
+        <div class="action-row">
+          <span><b>{{ a.name }}</b> <span class="muted">aktuell {{ de(stand) }} €</span></span>
+          {% if need < 0.005 %}<span style="color:var(--ok)">✓ ausgeglichen</span>
+          {% else %}
+          {% set fr = free.get(a.building) %}
+          {% if fr and fr != a.ref %}
+          <form method="post" action="/admin/reserves/pot-move" class="inline-actions">
+            <input type="hidden" name="building" value="{{ a.building }}"><input type="hidden" name="from" value="{{ fr }}">
+            <input type="hidden" name="to" value="{{ a.ref }}"><input type="hidden" name="back" value="{{ back }}">
+            <input type="text" name="amount" value="{{ de(need) }}" inputmode="decimal" aria-label="Betrag">
+            <button class="sec" title="nur in der App – beide Töpfe liegen auf demselben Rücklagenkonto">↔ aus Freies Vermögen</button>
+          </form>{% endif %}
+          {% if fints.get(a.building, {}).get('ok') %}
+          <form method="post" action="/admin/reserves/topup" class="inline-actions" data-confirm="Überweisung vom Hauptkonto aufs Rücklagenkonto für „{{ a.name }}“ (Betrag wie eingegeben) wird per FinTS eingereicht.">
+            <input type="hidden" name="building" value="{{ a.building }}"><input type="hidden" name="ref" value="{{ a.ref }}">
+            <input type="hidden" name="back" value="{{ back }}">
+            <input type="text" name="amount" value="{{ de(need) }}" inputmode="decimal" aria-label="Betrag">
+            {% if not fints[a.building].pin %}<input type="password" name="pin" placeholder="Bank-PIN" required style="max-width:8rem">{% endif %}
+            <button>🏦 vom Hauptkonto auffüllen</button>
+          </form>{% endif %}
+          {% endif %}
+        </div>
+      {% elif a.typ == 'differenz_zuweisen' %}
+        <form method="post" action="/admin/reserves/assign-diff" class="action-row">
+          <input type="hidden" name="building" value="{{ a.building }}"><input type="hidden" name="back" value="{{ back }}">
+          <span>Differenz zuweisen an</span>
+          <select name="ref">{% for ref, name, total in pots.get(a.building, []) %}<option value="{{ ref }}" {% if ref == (a.ref or free.get(a.building)) %}selected{% endif %}>{{ name }} ({{ de(total) }} €)</option>{% endfor %}</select>
+          <input type="text" name="amount" value="{{ de(a.betrag) }}" inputmode="decimal" aria-label="Betrag">
+          <button class="sec">Zuweisen (nur in der App)</button>
+        </form>
+      {% endif %}
+    {% endfor %}
   </div>
   {% endfor %}
   {% if rep.model %}<details style="margin-top:12px"><summary>Gesendete Daten dieser Prüfung (pseudonymisiert)</summary>

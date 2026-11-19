@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 OPENAI_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-5.6"
+DEFAULT_MODEL = "gpt-5-mini"
 TIMEOUT = 180
 SEVERITY = {"hoch": 0, "mittel": 1, "niedrig": 2}
 AREAS = ["ruecklagen", "abgleich", "konto", "budget", "auffaelligkeit", "sonstiges"]
@@ -76,12 +76,15 @@ class Pseudo:
         self.k = factor or round(rnd.uniform(0.8, 1.25), 4)
         self.labels: dict[str, str] = {}
         self._keys: dict[tuple, str] = {}
+        self.keys: dict[str, tuple] = {}  # Kennung → (Art, Schlüssel), z. B. ("T", "rp:3")
+        self.pots: dict[str, dict] = {}  # Kennung → Topf (Gebäude, ref, Name, Stand) für Aktionen
         self._free = {kind: rnd.sample(range(100, 1000), 900) for kind in KINDS}
 
     def tok(self, kind: str, key, label: str) -> str:
         if (kind, key) not in self._keys:
             t = f"{kind}-{self._free[kind].pop()}"
             self._keys[(kind, key)] = t
+            self.keys[t] = (kind, key)
             self.labels[t] = label
         return self._keys[(kind, key)]
 
@@ -94,8 +97,30 @@ class Pseudo:
     def rel(self, d: Optional[date]) -> Optional[int]:
         return (d - self.today).days if d else None
 
+    def resolve_back(self, text: str) -> str:
+        """Echte Topfnamen in Bezeichnungen durch Kennungen ersetzen (für die Anfrage)."""
+        for tok, label in sorted(self.labels.items(), key=lambda x: -len(x[1])):
+            if label and label in (text or ""):
+                text = text.replace(label, tok)
+        return text
+
     def resolve(self, text: str) -> str:
         return re.sub(r"\b([A-Z])-(\d{3})\b", lambda m: self.labels.get(m.group(0), m.group(0)), text or "")
+
+
+def own_ibans(s: Session) -> set:
+    """Alle eigenen Konten (Gebäude-Konten, Finanzplanung, Konten der Bankzugänge)."""
+    out = set()
+    for b in s.query(Building):
+        out |= {sepa.normalize_iban(b.account_iban), sepa.normalize_iban(b.reserve_iban)}
+    try:
+        from .db import BankAccess
+
+        for a in s.query(BankAccess):
+            out |= {x.get("iban", "") for x in (a.accounts or [])}
+    except Exception:  # noqa: BLE001
+        pass
+    return out - {""}
 
 
 def classify(name: str) -> dict:
@@ -110,6 +135,7 @@ def _de(x: float) -> str:
 
 
 def _finding(titel, bereich, schwere, refs, werte, beschreibung, massnahme, quelle="Regel") -> dict:
+    werte = [dict(w, einheit=w.get("einheit", "eur")) for w in werte]
     return {"titel": titel, "bereich": bereich, "schwere": schwere, "refs": refs, "werte": werte,
             "beschreibung": beschreibung, "massnahme": massnahme, "quelle": quelle}
 
@@ -129,19 +155,23 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
         stats = {r["plan"].id: r for r in reserves.plan_stats(s, bld, bal)}
         pots = []
         pot_sum = 0.0
+        negative = []
+        free_ref = reserves.free_pot(s, bld)
         for r in bal:
             pot_sum += r["total"]
             plan = None
             if r["ref"].startswith("rp:"):
                 plan = s.get(ReservePlan, int(r["ref"][3:]))
             t = p.tok("T", r["ref"], r["name"])
+            p.pots[t] = {"building": bld.id, "ref": r["ref"], "name": r["name"], "stand": r["total"]}
             item = {"id": t, **classify(r["name"]), "stand": p.amt(r["total"]),
                     "vorgemerkt_zu": p.amt(r["planned_in"]), "vorgemerkt_ab": p.amt(-r["planned_out"]),
                     "zufuehrungen": p.amt(r["in"]), "entnahmen": p.amt(-r["out"])}
             if plan is not None:
                 st = stats.get(plan.id, {})
                 item.update({"quelle": "fester Topf", "kategorie": plan.category, "finanzierung": plan.funding,
-                             "geschuetzt": plan.funding == "manuell", "aktiv": plan.active,
+                             "geschuetzt": plan.funding == "manuell" and r["ref"] != free_ref,
+                             "freie_reserve_zum_ausgleich": r["ref"] == free_ref, "aktiv": plan.active,
                              "intervall_monate": plan.interval or 1, "soll_jahr": p.amt(plan.annual_amount),
                              "soll_monat": p.amt(st.get("soll", 0)), "ist_monat_12m": p.amt(st.get("ist", 0)),
                              "entnahmen_12m": p.amt(st.get("out12", 0))})
@@ -155,11 +185,22 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
             else:
                 item["quelle"] = "Nebenkosten (zeitversetzte Zahlung)"
             if r["total"] < -0.005:
-                rules.append(_finding("Topf im Minus", "ruecklagen", "hoch", [t],
-                                      [{"bezeichnung": "Stand", "betrag": r["total"]}],
-                                      f"{r['name']} steht im Minus – es wurde mehr entnommen als angespart.",
-                                      "Fehlbetrag aus „Freies Vermögen“ umbuchen oder Rate erhöhen."))
+                negative.append((t, r))
             pots.append(item)
+        if negative:
+            free_stand = next((r["total"] for r in bal if r["ref"] == free_ref), None)
+            total_neg = round(sum(r["total"] for _, r in negative), 2)
+            f = _finding(f"{len(negative)} Töpfe im Minus" if len(negative) > 1 else "Topf im Minus", "ruecklagen",
+                         "hoch", [t for t, _ in negative],
+                         [{"bezeichnung": r["name"], "betrag": r["total"]} for _, r in negative]
+                         + ([{"bezeichnung": "Summe", "betrag": total_neg}] if len(negative) > 1 else []),
+                         "Es wurde mehr entnommen als angespart" + (f"; „Freies Vermögen“ steht bei {_de(free_stand)} €."
+                                                                     if free_stand is not None else "."),
+                         "Je Topf auffüllen: aus „Freies Vermögen“ umbuchen (nur in der App, kein Geldfluss) oder per "
+                         "FinTS vom Hauptkonto überweisen.")
+            f["aktionen"] = [{"typ": "topf_auffuellen", "building": bld.id, "ref": r["ref"], "name": r["name"],
+                              "betrag": round(-r["total"], 2)} for _, r in negative]
+            rules.append(f)
         acct = {}
         if bld.account_iban:
             acct["hauptkonto"] = {"id": p.tok("K", sepa.normalize_iban(bld.account_iban), "Hauptkonto " + bld.label),
@@ -182,6 +223,9 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
                                       "Summe der virtuellen Töpfe ab." if bld.bank_reserve_date else
                                       f"{bld.label}: Kontostand weicht von der Summe der Töpfe ab.",
                                       "Offene Umsätze im Abgleich zuordnen; Rest einem Topf (z. B. Freies Vermögen) zuweisen."))
+                if diff > 0:
+                    rules[-1]["aktionen"] = [{"typ": "differenz_zuweisen", "building": bld.id, "betrag": diff,
+                                              "ref": free_ref or ""}]
         lines = reserves.open_lines(s, bld)
         if lines:
             rules.append(_finding("Nicht zugeordnete Kontoumsätze", "abgleich", "mittel" if len(lines) > 3 else "niedrig",
@@ -220,11 +264,14 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
                                       FinTxn.booking_date >= today - timedelta(days=190)).all()
         matcher = d["matcher"]
         months = defaultdict(lambda: defaultdict(float))
+        own_set = own_ibans(s)
         for t in txns:
             if t.booking_date:
                 c = matcher.category(t)
                 idx = (t.booking_date.year - today.year) * 12 + t.booking_date.month - today.month
-                months[idx][cat_id(c) if c else "unkategorisiert"] += t.amount
+                key = "eigene Konten (Umbuchung)" if sepa.normalize_iban(t.iban) in own_set else \
+                    (cat_id(c) if c else "unkategorisiert")
+                months[idx][key] += t.amount
         budgets = [{"kategorie": cat_id(b["cat"]), "budget": p.amt(b["cat"].budget) if b["cat"].budget else None,
                     "verbraucht": p.amt(b["used"]), "schnitt_3m": p.amt(b["avg"]),
                     "rest": p.amt(b["rest"]) if b["rest"] is not None else None} for b in d["budgets"]]
@@ -245,6 +292,7 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
         def payee(t):
             c = matcher.category(t)
             return p.tok("E", (t.name or t.purpose[:20]).upper().strip(), t.name or t.purpose[:40]), (cat_id(c) if c else "unkategorisiert")
+        own = own_ibans(s)
         seen_before = {(t.name or "").upper() for t in s.query(FinTxn.name).filter(
             FinTxn.account_iban == d["iban"], FinTxn.booking_date < today - timedelta(days=90))}
         avg = defaultdict(list)
@@ -254,6 +302,8 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
         anomalies = []
         recent = [t for t in txns if t.booking_date and t.booking_date >= today - timedelta(days=90)]
         for t in recent:
+            if sepa.normalize_iban(t.iban) in own:
+                continue  # Umbuchung zwischen eigenen Konten (Sparen, Rücklagen) – keine Auffälligkeit
             c = matcher.category(t)
             vals = [v for v in avg[c.id if c else 0] if v < 0]
             mean = sum(vals) / len(vals) if vals else 0
@@ -293,7 +343,9 @@ def collect(s: Session, p: Pseudo) -> tuple[dict, list[dict]]:
         }
     # Regelbefunde für die KI (pseudonymisiert, Texte ohne Namen)
     data["regelpruefung"] = [{"titel": f["titel"], "bereich": f["bereich"], "schwere": f["schwere"], "refs": f["refs"],
-                              "werte": [{"bezeichnung": w["bezeichnung"], "betrag": p.amt(w["betrag"])} for w in f["werte"]]}
+                              "werte": [{"bezeichnung": p.resolve_back(w["bezeichnung"]), "einheit": w["einheit"],
+                                         "betrag": p.amt(w["betrag"]) if w["einheit"] == "eur" else w["betrag"]}
+                                        for w in f["werte"]]}
                              for f in rules]
     return data, rules
 
@@ -348,8 +400,14 @@ Prüfe insbesondere:
 - Auffälligkeiten: Doppelzahlungen, Ausreißer, neue Empfänger, Preissteigerungen wiederkehrender Zahlungen.
 Die Regelprüfung der App ist enthalten – bewerte und ergänze sie, wiederhole sie nicht nur.
 
+Hinweise zu den Daten: Ein Topf mit „freie_reserve_zum_ausgleich“ ist ausdrücklich zum Auffüllen anderer Töpfe da;
+„geschuetzt“ = nicht antasten. Zahlungen an eigene Konten (Sparen, Rücklagen, Kinderkonten) stehen gesammelt als
+„eigene Konten (Umbuchung)“ und sind keine Auffälligkeit. Befunde der Regelprüfung NICHT erneut als eigenen Befund
+ausgeben – nur neue Erkenntnisse, Ursachen, Zusammenhänge oder eine priorisierte Reihenfolge der Maßnahmen.
+
 Antwortregeln: Nenne Objekte ausschließlich über ihre Kennung. Schreibe in Texten KEINE Beträge und keine Zahlen
-mit Währungsbezug – Beträge gehören ins Feld „werte“ (in VE). Rate keine echten Namen. Antworte auf Deutsch,
+mit Währungsbezug – Beträge gehören ins Feld „werte“ (in VE, einheit „eur“); Anzahlen, Prozente und Tage mit der
+passenden Einheit (diese werden nicht umgerechnet). Rate keine echten Namen. Antworte auf Deutsch,
 knapp und konkret, mit umsetzbaren Maßnahmen. Wenn alles in Ordnung ist, sage das."""
 
 SCHEMA = {
@@ -367,8 +425,9 @@ SCHEMA = {
                 "schwere": {"type": "string", "enum": ["hoch", "mittel", "niedrig"]},
                 "refs": {"type": "array", "items": {"type": "string"}},
                 "werte": {"type": "array", "items": {
-                    "type": "object", "additionalProperties": False, "required": ["bezeichnung", "betrag"],
-                    "properties": {"bezeichnung": {"type": "string"}, "betrag": {"type": "number"}}}},
+                    "type": "object", "additionalProperties": False, "required": ["bezeichnung", "betrag", "einheit"],
+                    "properties": {"bezeichnung": {"type": "string"}, "betrag": {"type": "number"},
+                                   "einheit": {"type": "string", "enum": ["eur", "anzahl", "prozent", "tage", "monate"]}}}},
                 "beschreibung": {"type": "string"},
                 "massnahme": {"type": "string"},
             }}},
@@ -464,6 +523,15 @@ def list_models(key: str) -> list[str]:
     return sorted(i for i in ids if re.match(r"^(gpt|o\d)", i) and not re.search(r"audio|realtime|tts|image|transcribe|search", i))
 
 
+def pot_action(p: Pseudo, tok: str) -> Optional[dict]:
+    """Zu einem Befund der KI: Topf im Minus → Aktion „auffüllen“ anbieten."""
+    pot = p.pots.get(tok)
+    if pot and pot["stand"] < -0.005:
+        return {"typ": "topf_auffuellen", "building": pot["building"], "ref": pot["ref"], "name": pot["name"],
+                "betrag": round(-pot["stand"], 2)}
+    return None
+
+
 def resolve(answer: dict, p: Pseudo) -> dict:
     """Kennungen → echte Namen, VE → Euro."""
     out = {"gesamturteil": answer.get("gesamturteil", "hinweise"),
@@ -473,8 +541,10 @@ def resolve(answer: dict, p: Pseudo) -> dict:
             "titel": p.resolve(f.get("titel", "")), "bereich": f.get("bereich", "sonstiges"),
             "schwere": f.get("schwere", "niedrig"),
             "refs": [p.labels.get(r, r) for r in f.get("refs", [])],
-            "werte": [{"bezeichnung": p.resolve(w.get("bezeichnung", "")), "betrag": p.back(w.get("betrag"))}
+            "werte": [{"bezeichnung": p.resolve(w.get("bezeichnung", "")), "einheit": w.get("einheit", "eur"),
+                       "betrag": p.back(w.get("betrag")) if w.get("einheit", "eur") == "eur" else w.get("betrag")}
                       for w in f.get("werte", [])],
+            "aktionen": [a for r in f.get("refs", []) if (a := pot_action(p, r))],
             "beschreibung": p.resolve(f.get("beschreibung", "")), "massnahme": p.resolve(f.get("massnahme", "")),
             "quelle": "KI"})
     return out
@@ -564,6 +634,19 @@ def monthly_background() -> None:
 VERDICT = {"in_ordnung": ("✅", "In Ordnung"), "hinweise": ("ℹ️", "Hinweise"), "kritisch": ("⚠️", "Kritisch")}
 
 
+def _action_ctx(s: Session) -> dict:
+    """Für die Knöpfe an den Befunden: aktuelle Töpfe, „Freies Vermögen“, Bankzugang je Gebäude."""
+    from . import banking, reserves
+
+    pots, free, fints = {}, {}, {}
+    for b in s.query(Building):
+        pots[b.id] = [(r["ref"], r["name"], r["total"]) for r in reserves.balances(s, b) if r["ref"] != reserves.ARCHIVE]
+        free[b.id] = reserves.free_pot(s, b)
+        acc = banking.access_for_iban(s, b.account_iban) if b.account_iban else None
+        fints[b.id] = {"ok": acc is not None, "pin": bool(acc and acc.pin)}
+    return {"pots": pots, "free": free, "fints": fints}
+
+
 def _ctx(s: Session) -> dict:
     st = get_settings(s)
     key = api_key(s)
@@ -581,7 +664,7 @@ def audit_page(request: Request, show: str = "", s: Session = Depends(get_sessio
         payload, found, _ = preview(s)
         ctx.update(preview=json.dumps(payload, ensure_ascii=False, indent=2), leaks=found)
     rep = ctx["reports"][0] if ctx["reports"] else None
-    return _page(request, "audit.html", rep=rep, **ctx)
+    return _page(request, "audit.html", rep=rep, **ctx, **_action_ctx(s))
 
 
 @router.get("/admin/pruefung/{rid}", response_class=HTMLResponse)
@@ -589,7 +672,7 @@ def audit_view(request: Request, rid: int, s: Session = Depends(get_session)):
     rep = s.get(AuditReport, rid)
     if rep is None:
         raise HTTPException(404)
-    return _page(request, "audit.html", rep=rep, **_ctx(s))
+    return _page(request, "audit.html", rep=rep, **_ctx(s), **_action_ctx(s))
 
 
 @router.post("/admin/pruefung/run")

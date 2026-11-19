@@ -262,9 +262,13 @@ def test_submit_export_with_tan_vop_and_confirm():
         page = c.get("/admin/bank").text
         assert "Offene Aufträge" in page and f"/admin/bank/export/{eid}" in page
 
+        # ohne ausdrückliche Bestätigung passiert nichts
+        n0 = len(BANK.sent)
+        r = c.post(f"/admin/bank/export/{eid}", data={"confirm": "ja"})
+        assert "AUSFÜHREN" in r.text and len(BANK.sent) == n0
         # Empfängerprüfung weicht ab → bestätigen → TAN eingeben
         BANK.pay_challenges = [FakeVOP("RVMC", "TIMO MUSTERMANN"), FakeTAN(decoupled=False, text="TAN für 50,34 EUR")]
-        r = c.post(f"/admin/bank/export/{eid}", data={})
+        r = c.post(f"/admin/bank/export/{eid}", data={"confirm": "AUSFÜHREN"})
         assert "passt nur teilweise" in r.text and "TIMO MUSTERMANN" in r.text
         r = c.post(f"/admin/bank/job/{aid}", data={"vop_ok": "1"})
         assert "TAN für 50,34 EUR" in r.text
@@ -288,19 +292,19 @@ def test_submit_export_with_tan_vop_and_confirm():
             s.commit()
             eid2 = ex.id
         BANK.pay_challenges = [FakeTAN(decoupled=True)]
-        c.post(f"/admin/bank/export/{eid2}", data={})
+        c.post(f"/admin/bank/export/{eid2}", data={"confirm": "AUSFÜHREN"})
         assert BANK.sent[-1]["seg"] == "HKCME" and future.isoformat() in BANK.sent[-1]["xml"]
         d = c.get(f"/admin/bank/job/{aid}/poll").json()
         assert d["state"] == "done" and f"Ausführung am {future:%d.%m.%Y}" in d["message"]
 
         # vom Sparkonto erlaubt die Bank keine Überweisung an Fremde → klare Meldung, nichts gesendet
         n = len(BANK.sent)
-        r = c.post("/admin/bank/transfer", data={"from": SPAR, "to": "other", "to_name": "Fremd GmbH",
+        r = c.post("/admin/bank/transfer", data={"confirm": "AUSFÜHREN", "from": SPAR, "to": "other", "to_name": "Fremd GmbH",
                                                  "to_iban": "DE44500105175407324931", "amount": "100", "purpose": "TEST"})
         assert "keine Einzelüberweisung per FinTS" in r.text and len(BANK.sent) == n
         # … aber eine Umbuchung aufs eigene Girokonto (HKCUM)
         BANK.pay_challenges = [FakeTAN(decoupled=False)]
-        c.post("/admin/bank/transfer", data={"from": SPAR, "to": GIRO, "amount": "100", "purpose": "AUS RUECKLAGE"})
+        c.post("/admin/bank/transfer", data={"confirm": "AUSFÜHREN", "from": SPAR, "to": GIRO, "amount": "100", "purpose": "AUS RUECKLAGE"})
         r = c.post(f"/admin/bank/job/{aid}", data={"tan": "654321"})
         assert "1 Überweisung(en) über 100,00 € eingereicht" in r.text
         assert BANK.sent[-1]["seg"] == "HKCUM" and BANK.sent[-1]["iban"] == SPAR and GIRO in BANK.sent[-1]["xml"]
@@ -314,14 +318,14 @@ def test_submit_export_with_tan_vop_and_confirm():
             s.commit()
             eid3 = ex.id
         BANK.pay_challenges = []
-        r = c.post(f"/admin/bank/export/{eid3}", data={})
+        r = c.post(f"/admin/bank/export/{eid3}", data={"confirm": "AUSFÜHREN"})
         assert "eingereicht" in r.text and BANK.sent[-1]["seg"] == "HKCUM"
         assert "RG-ABCDEFGH GUTSCHRIFT" in BANK.sent[-1]["xml"] and "<EndToEndId>RG-ABCDEFGH" in BANK.sent[-1]["xml"]
         with SessionLocal() as s:
             assert s.get(SepaExport, eid3).status == "done"
         # Übertrag Giro → Aktivsparen
         BANK.pay_challenges = []
-        r = c.post("/admin/bank/transfer", data={"from": GIRO, "to": SPAR, "amount": "250,00", "purpose": "SPAREN"})
+        r = c.post("/admin/bank/transfer", data={"confirm": "AUSFÜHREN", "from": GIRO, "to": SPAR, "amount": "250,00", "purpose": "SPAREN"})
         assert "1 Überweisung(en) über 250,00 € eingereicht" in r.text
         assert BANK.sent[-1]["seg"] == "HKCCS" and SPAR in BANK.sent[-1]["xml"] and "SPAREN" in BANK.sent[-1]["xml"]
 
@@ -403,7 +407,7 @@ def test_order_then_accounts_refreshed_and_sync_slots():
         _prepare(c)
         aid = _connect(c)
         before = BANK.fetches
-        r = c.post("/admin/bank/transfer", data={"from": GIRO, "to": SPAR, "amount": "10", "purpose": "SPAREN"})
+        r = c.post("/admin/bank/transfer", data={"confirm": "AUSFÜHREN", "from": GIRO, "to": SPAR, "amount": "10", "purpose": "SPAREN"})
         assert "eingereicht" in r.text and "Konten aktualisiert" in r.text and BANK.fetches == before + 2
     with SessionLocal() as s:
         acc = s.get(BankAccess, aid)

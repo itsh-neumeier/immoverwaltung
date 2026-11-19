@@ -139,7 +139,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
 </div>
 
 <h2>Monatlicher Sammelauftrag Rücklagen (Zuführungen)</h2>
-<form method="post" action="/admin/reserves/export" class="card">
+<form method="post" action="/admin/reserves/export" class="card" {% if bld.fints_submit is not false and (bld.account_iban or '')|replace(' ', '')|upper in fints %}data-confirm="Der Sammelauftrag wird sofort per FinTS bei der Bank eingereicht (Überweisung Hauptkonto → Rücklagenkonto, danach pushTAN-Freigabe)."{% endif %}>
   <input type="hidden" name="building" value="{{ bld.id }}">
   {% if items %}
   <div class="scroll"><table>
@@ -239,7 +239,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
 
 {% if refunds or is_super %}
 <h2 id="gutschriften">Offene Gutschriften – Rechnungen vom Hauptkonto</h2>
-<form method="post" action="/admin/reserves/refunds/export" class="card">
+<form method="post" action="/admin/reserves/refunds/export" class="card" {% if bld.fints_submit is not false and (bld.reserve_iban or '')|replace(' ', '')|upper in fints %}data-confirm="Die Gutschrift wird sofort per FinTS bei der Bank eingereicht (Rücklagenkonto → Hauptkonto, danach pushTAN-Freigabe)."{% endif %}>
   <input type="hidden" name="building" value="{{ bld.id }}">
   <p class="muted">Rechnungen, die vom <b>Hauptkonto</b> bezahlt wurden und zu einem Topf gehören („Rechnung kommt von“ beim
   Topf bzw. bei der Fixkosten-/Umlage-Position). Ausgewählte werden als <b>Sammelauftrag Gutschriften</b> (Rücklagenkonto →
@@ -319,7 +319,7 @@ z. B. „Trinkwasser“ oder „IPTV“ das Häkchen <b>„Rücklage bilden“</
     {% else %}
       <span class="badge" style="background:#fef3c7;color:#92400e">⏳ wartet auf Ausführung</span>
       {% set debtor_iban = (bld.account_iban if ex.kind == 'in' else bld.reserve_iban)|replace(' ', '')|upper %}
-      {% if debtor_iban in fints %}<form method="post" action="/admin/bank/export/{{ ex.id }}" style="display:flex;gap:6px;align-items:center;margin-top:4px">
+      {% if debtor_iban in fints %}<form method="post" action="/admin/bank/export/{{ ex.id }}" style="display:flex;gap:6px;align-items:center;margin-top:4px" data-confirm="{{ ex.count }} Überweisung(en) über {{ ex.total|eur }} werden per FinTS bei der Bank eingereicht.">
         <input type="hidden" name="back" value="/admin/reserves?building={{ bld.id }}">
         {% if not fints[debtor_iban] %}<input type="password" name="pin" placeholder="Bank-PIN" autocomplete="off" required style="max-width:9rem">{% endif %}
         <button>🏦 Per FinTS einreichen</button>{% if ex.exec_date and ex.exec_date > today and not ex.manual %}<button class="sec" name="now" value="1">sofort</button>{% endif %}</form>{% endif %}

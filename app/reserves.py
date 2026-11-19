@@ -28,6 +28,15 @@ router = APIRouter()
 ARCHIVE = "ar:0"  # Buchungsverlauf gelöschter Töpfe (Summe 0 – bleibt für den Kontoabgleich erhalten)
 INTERVALS = {1: "monatlich", 3: "vierteljährlich", 6: "halbjährlich", 12: "jährlich"}
 KINDS = {"in": "Zuführung", "out": "Auszahlung / Entnahme", "start": "Anfangsbestand"}
+ENTRY_KINDS = dict(KINDS)  # von Hand buchbar
+KINDS = {**KINDS, "move": "Umbuchung zwischen Töpfen", "adjust": "Ausgleich Kontoabgleich"}
+CONFIRM_WORD = "AUSFÜHREN"  # muss bei Bank-Aktionen ausdrücklich eingegeben werden
+
+
+def confirmed(form) -> bool:
+    """Bank-Aktion ausdrücklich bestätigt (Popup: „AUSFÜHREN“ eingeben)?"""
+    v = " ".join(str(form.get("confirm", "")).split()).upper().replace("UE", "Ü")
+    return v == CONFIRM_WORD
 
 
 @dataclass
@@ -327,12 +336,15 @@ def _bank_refresh(s: Session):
     return refresh_info(s)
 
 
-def _fints_now(request: Request, s: Session, bld: Building, ex: SepaExport, msg: str, back: str):
+def _fints_now(request: Request, s: Session, bld: Building, ex: SepaExport, msg: str, back: str, form=None):
     """Neuer Auftrag → gleich per FinTS einreichen (pushTAN-Freigabe), wenn eingerichtet. Sonst None."""
     from . import banking
 
     if banking.auto_submit_ready(s, bld, ex) is None:
         return None
+    if form is None or not confirmed(form):
+        return _redirect(back, f"{msg} · Nicht per FinTS eingereicht – Bestätigung „{CONFIRM_WORD}“ fehlte "
+                               "(Auftrag liegt unter Finanzen → Bankzugang bereit).")
     me = current(request)
     try:
         acc, job = banking.submit_export(s, ex, me.display if me else "", back=back)
@@ -478,7 +490,7 @@ async def export(request: Request, s: Session = Depends(get_session)):
         return _redirect(f"/admin/reserves?building={bld.id}", f"SEPA-Datei nicht erzeugt: {e}")
     s.commit()
     if (r := _fints_now(request, s, bld, ex, f"Sammelauftrag {len(items)} Überweisung(en), {_de(ex.total)} €",
-                        f"/admin/reserves?building={bld.id}")):
+                        f"/admin/reserves?building={bld.id}", form)):
         return r
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}",
                      f"SEPA-Datei erzeugt: {len(items)} Überweisung(en), {_de(ex.total)} € – jetzt im Online-Banking "
@@ -544,7 +556,7 @@ async def entry_add(request: Request, s: Session = Depends(get_session)):
     bld = _building(s, form.get("building"))
     back = f"/admin/reserves?building={bld.id}"
     kind = str(form.get("kind", "out"))
-    if kind not in KINDS:
+    if kind not in ENTRY_KINDS:
         kind = "out"
     ref = str(form.get("ref", ""))
     names = all_positions(s)
@@ -1283,13 +1295,13 @@ async def refunds_export(request: Request, s: Session = Depends(get_session)):
         ex.manual, ex.token = True, new_token(s)
         ex.manual_purpose = manual_purpose(ex, [(r["purpose"], r["amount"]) for r in rows])
         s.commit()
-        if (r := _fints_now(request, s, bld, ex, f"Gutschrift {len(rows)} Posten, {_de(ex.total)} €", back)):
+        if (r := _fints_now(request, s, bld, ex, f"Gutschrift {len(rows)} Posten, {_de(ex.total)} €", back, form)):
             return r
         return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
                          f"Gutschrift vorbereitet: {len(rows)} Posten, {_de(ex.total)} € – bitte als eine Überweisung "
                          "vom Rücklagenkonto aufs Hauptkonto ausführen (Vorlage oben).")
     s.commit()
-    if (r := _fints_now(request, s, bld, ex, f"Gutschriften {len(rows)} Posten, {_de(ex.total)} €", back)):
+    if (r := _fints_now(request, s, bld, ex, f"Gutschriften {len(rows)} Posten, {_de(ex.total)} €", back, form)):
         return r
     return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}#gutschriften",
                      f"Sammelauftrag Gutschriften erzeugt: {len(rows)} Überweisung(en), {_de(ex.total)} € – im "
@@ -1350,6 +1362,124 @@ async def entry_move(request: Request, eid: int, s: Session = Depends(get_sessio
     e.ref, e.name = ref, names[ref]
     s.commit()
     return _redirect(f"/admin/reserves?building={e.building_id}#buchungen", f"Umgebucht: {old} → {names[ref]}")
+
+
+# --------------------------------------------------------------------------- Töpfe ausgleichen (aus der Kassenprüfung)
+FREE_RX = re.compile(r"FREIES\s+VERM(Ö|OE)GEN|FREIE\s+RESERVE", re.I)
+
+
+def free_pot(s: Session, bld: Building) -> Optional[str]:
+    """Topf „Freies Vermögen“ (zum Auffüllen anderer Töpfe), falls vorhanden."""
+    for p in plans(s, bld, active_only=True):
+        if FREE_RX.search(p.name or "") or FREE_RX.search(p.label or ""):
+            return f"rp:{p.id}"
+    return None
+
+
+def pot_move(s: Session, bld: Building, src: str, dst: str, amount: float, note: str = "") -> str:
+    """Virtuelle Umbuchung zwischen zwei Töpfen (gleiches Rücklagenkonto – kein Geldfluss bei der Bank)."""
+    names = all_positions(s)
+    if src not in names or dst not in names or src == dst:
+        raise ValueError("Bitte zwei verschiedene Töpfe wählen.")
+    if amount <= 0:
+        raise ValueError("Betrag muss größer 0 sein.")
+    amount = round(amount, 2)
+    stand = next((r["total"] for r in balances(s, bld) if r["ref"] == src), 0.0)
+    today = date.today()
+    text = note or f"UMBUCHUNG {names[src]} → {names[dst]}"
+    s.add(ReserveEntry(building_id=bld.id, ref=src, name=names[src], booking_date=today, amount=-amount, kind="move",
+                       note=f"{text} (an {names[dst]})"[:140]))
+    s.add(ReserveEntry(building_id=bld.id, ref=dst, name=names[dst], booking_date=today, amount=amount, kind="move",
+                       note=f"{text} (aus {names[src]})"[:140]))
+    s.commit()
+    msg = f"Umgebucht: {_de(amount)} € von {names[src]} nach {names[dst]}"
+    if amount > stand + 0.005:
+        msg += f" – Achtung: {names[src]} hatte nur {_de(stand)} €"
+    return msg
+
+
+def _back_url(form, bld: Building) -> str:
+    back = str(form.get("back", ""))
+    return back if back.startswith("/admin") and "//" not in back else f"/admin/reserves?building={bld.id}"
+
+
+@router.post("/admin/reserves/pot-move")
+async def pot_move_route(request: Request, s: Session = Depends(get_session)):
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = _back_url(form, bld)
+    try:
+        msg = pot_move(s, bld, str(form.get("from", "")), str(form.get("to", "")),
+                       rnd.parse_float(form.get("amount")) or 0.0)
+    except ValueError as e:
+        return _redirect(back, str(e))
+    return _redirect(back, msg)
+
+
+@router.post("/admin/reserves/assign-diff")
+async def assign_diff(request: Request, s: Session = Depends(get_session)):
+    """Mehr Geld auf dem Rücklagenkonto als in den Töpfen: Differenz einem Topf zuweisen (nur in der App)."""
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = _back_url(form, bld)
+    names = all_positions(s)
+    ref = str(form.get("ref", ""))
+    amount = round(rnd.parse_float(form.get("amount")) or 0.0, 2)
+    if ref not in names or amount <= 0:
+        return _redirect(back, "Bitte Topf und Betrag angeben.")
+    s.add(ReserveEntry(building_id=bld.id, ref=ref, name=names[ref], booking_date=date.today(), amount=amount,
+                       kind="adjust", note="AUSGLEICH KONTOABGLEICH (Differenz Kontostand – Töpfe)"))
+    s.commit()
+    return _redirect(back, f"{_de(amount)} € dem Topf {names[ref]} zugewiesen (Ausgleich Kontoabgleich).")
+
+
+@router.post("/admin/reserves/topup")
+async def topup(request: Request, s: Session = Depends(get_session)):
+    """Topf auffüllen: Überweisung Hauptkonto → Rücklagenkonto (SEPA) und Zuführung im Topf; per FinTS mit
+    ausdrücklicher Bestätigung („AUSFÜHREN“) und pushTAN."""
+    form = await request.form()
+    bld = _building(s, form.get("building"))
+    back = _back_url(form, bld)
+    names = all_positions(s)
+    ref = str(form.get("ref", ""))
+    amount = round(rnd.parse_float(form.get("amount")) or 0.0, 2)
+    if ref not in names or amount <= 0:
+        return _redirect(back, "Bitte Topf und Betrag angeben.")
+    if not confirmed(form):
+        return _redirect(back, f"Nicht ausgeführt – zur Bestätigung „{CONFIRM_WORD}“ eingeben.")
+    pos = positions(s, bld).get(ref) or Position(ref, names[ref], names[ref].upper())
+    plan = s.get(ReservePlan, int(ref[3:])) if ref.startswith("rp:") else None
+    private = bool(plan and plan.category == "privat")
+    code = "" if private or not bld.code else f" GID: {gid(bld.code)}"
+    purpose = f"RUECKLAGE AUSGLEICH {pos.label}{code} {_de(amount)} EUR".upper()
+    e = ReserveEntry(building_id=bld.id, ref=ref, name=names[ref], booking_date=date.today(), amount=amount, kind="in",
+                     note=purpose)
+    s.add(e)
+    s.flush()
+    e.e2e = f"RLAUSGL{e.id}"
+    exec_date = date.today() if sepa.is_business_day(date.today()) else sepa.next_business_day()
+    try:
+        debtor, creditor = accounts(bld)
+        msg_id, xml = sepa.credit_transfer(debtor, creditor, [sepa.Transfer(amount, purpose, e.e2e)], exec_date,
+                                           bld.sepa_format or "pain.001.001.09")
+    except sepa.SepaError as err:
+        s.rollback()
+        return _redirect(back, f"Nicht erzeugt: {err}")
+    ex = _store_export(s, request, bld, "in", xml, msg_id, exec_date, 1, amount)
+    e.export_id = ex.id
+    s.commit()
+    from . import banking
+
+    acc = banking.access_for_iban(s, bld.account_iban)
+    if acc is None:
+        return _redirect(f"/admin/reserves?building={bld.id}&dl={ex.id}",
+                         f"Auffüllen {names[ref]}: SEPA-Datei über {_de(amount)} € erzeugt (kein Bankzugang) – hochladen und bestätigen.")
+    me = current(request)
+    try:
+        acc, job = banking.submit_export(s, ex, me.display if me else "", pin=str(form.get("pin", "") or ""), back=back)
+    except banking.BankError as err:
+        return _redirect(back, f"Auftrag erzeugt, aber nicht per FinTS eingereicht: {err}")
+    return banking._job_redirect(acc, job, f"Auffüllen {names[ref]} {_de(amount)} €")
 
 
 def repair_mirrors(s: Session, bld: Building) -> int:

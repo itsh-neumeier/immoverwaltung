@@ -103,7 +103,7 @@ Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#ei
     <td class="r">{{ de(e.ex.total) }} €</td>
     <td>{{ e.ex.exec_date.strftime('%d.%m.%Y') if e.ex.exec_date and not e.ex.manual else 'sofort' }}</td>
     <td>{% if e.access %}
-      <form method="post" action="/admin/bank/export/{{ e.ex.id }}" class="inline-actions">
+      <form method="post" action="/admin/bank/export/{{ e.ex.id }}" class="inline-actions" data-confirm="{{ e.ex.count }} Überweisung(en) über {{ de(e.ex.total) }} € werden bei der Bank eingereicht.">
         {% if not e.access.pin %}<input type="password" name="pin" placeholder="PIN" autocomplete="off" required style="max-width:9rem">{% endif %}
         <button>{{ 'Terminiert einreichen' if e.future else 'Jetzt einreichen' }}</button>
         {% if e.future %}<button class="sec" name="now" value="1">Sofort ausführen</button>{% endif %}
@@ -119,7 +119,7 @@ Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#ei
 {# ---------------------------------------------------------------- Übertrag #}
 {% if own %}
 <h2 id="uebertrag">Übertrag / Überweisung</h2>
-<form method="post" action="/admin/bank/transfer" class="card">
+<form method="post" action="/admin/bank/transfer" class="card" data-confirm="Die Überweisung bzw. der Übertrag wird bei der Bank eingereicht.">
   <p class="muted" style="margin-top:0">z. B. vom Girokonto aufs Aktivsparen (und zurück, falls die Bank das per FinTS erlaubt).</p>
   <div class="grid">
     <div><label>Von</label><select name="from" required>

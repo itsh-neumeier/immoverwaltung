@@ -159,3 +159,49 @@ def test_free_tier_model_test_picks_working_cheap_model(monkeypatch):
         assert 'value="gpt-4.1-mini"' in r.text and '<option value="gpt-5.6-nano">' in r.text
     assert "Kontingent aufgebraucht" in audit.explain_error(429, {"error": {"code": "insufficient_quota"}})
     assert "zu viele Anfragen" in audit.explain_error(429, {"error": {"code": "rate_limit_exceeded"}})
+
+
+def test_actions_fill_negative_pot_and_assign_difference():
+    from app import reserves
+
+    with TestClient(app) as c:
+        p_neg = _setup(c)
+        with SessionLocal() as s:
+            b = s.query(Building).first()
+            bid = b.id
+            free = ReservePlan(building_id=bid, name="Privat · Freies Vermögen", label="FREIES VERMOEGEN",
+                               funding="manuell", category="privat", active=True, start="2026-01")
+            s.add(free)
+            s.flush()
+            s.add(ReserveEntry(building_id=bid, ref=f"rp:{free.id}", name=free.name, booking_date=date(2026, 6, 1),
+                               amount=100, kind="start"))
+            s.commit()
+            fid = free.id
+        r = c.post("/admin/pruefung/run", data={})
+        assert "Topf im Minus" in r.text and "↔ aus Freies Vermögen" in r.text and "Differenz zuweisen an" in r.text
+        assert "vom Hauptkonto auffüllen" not in r.text  # ohne Bankzugang kein FinTS-Knopf
+        rid = int(r.url.path.rsplit("/", 1)[1])
+        # aus Freies Vermögen umbuchen (nur in der App)
+        r = c.post("/admin/reserves/pot-move", data={"building": bid, "from": f"rp:{fid}", "to": f"rp:{p_neg}",
+                                                    "amount": "30,00", "back": f"/admin/pruefung/{rid}#b0"})
+        assert "Umgebucht: 30,00 €" in r.text and "✓ ausgeglichen" in r.text
+        with SessionLocal() as s:
+            bal = {x["ref"]: x["total"] for x in reserves.balances(s, s.get(Building, bid))}
+            assert bal[f"rp:{p_neg}"] == 0.0 and bal[f"rp:{fid}"] == 70.0
+        # Differenz Kontostand – Töpfe zuweisen: 500 € Konto vs. 490 € Töpfe → 10 €
+        c.post("/admin/reserves/assign-diff", data={"building": bid, "ref": f"rp:{fid}", "amount": "10"})
+        with SessionLocal() as s:
+            total = sum(x["total"] for x in reserves.balances(s, s.get(Building, bid)))
+            assert round(total, 2) == 500.0
+        # Auffüllen vom Hauptkonto: nur mit ausdrücklicher Bestätigung
+        r = c.post("/admin/reserves/topup", data={"building": bid, "ref": f"rp:{p_neg}", "amount": "12"})
+        assert "AUSFÜHREN" in r.text
+        r = c.post("/admin/reserves/topup", data={"building": bid, "ref": f"rp:{p_neg}", "amount": "12",
+                                                  "confirm": "AUSFÜHREN"})
+        assert "SEPA-Datei über 12,00 € erzeugt" in r.text
+        with SessionLocal() as s:
+            e = s.query(ReserveEntry).filter(ReserveEntry.e2e.like("RLAUSGL%")).one()
+            assert e.amount == 12 and e.kind == "in" and e.export_id and "RUECKLAGE AUSGLEICH" in e.note
+        # zweite Prüfung: kein Topf mehr im Minus, keine Differenz-Aktion
+        r = c.post("/admin/pruefung/run", data={})
+        assert "Topf im Minus" not in r.text

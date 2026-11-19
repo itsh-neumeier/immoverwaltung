@@ -273,3 +273,14 @@ button.small{padding:3px 8px;font-size:.85rem}
 .finding-values{display:flex;flex-wrap:wrap;gap:14px;font-size:.92rem}
 .badge.ai{background:#ede9fe;color:#5b21b6}
 pre.payload{max-height:420px;overflow:auto;font-size:12px;background:rgba(127,127,127,.08);padding:10px;border-radius:8px}
+/* Bestätigungs-Popup für Bankaufträge */
+dialog.confirm-dialog{border:none;border-radius:14px;padding:22px;max-width:440px;width:calc(100% - 32px);background:var(--card,#fff);color:inherit;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+dialog.confirm-dialog::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
+dialog.confirm-dialog h2{margin-top:0}
+.confirm-input{font-size:1.3rem;letter-spacing:.12em;text-align:center;text-transform:uppercase}
+.confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+button.danger{background:var(--danger,#dc2626);border-color:var(--danger,#dc2626);color:#fff}
+button.danger:disabled{opacity:.45;cursor:not-allowed}
+.action-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;padding:6px 8px;border-radius:8px;background:rgba(127,127,127,.07)}
+.action-row input[type=text]{max-width:7.5rem;margin:0}
+.action-row button,.action-row select{margin:0}

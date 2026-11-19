@@ -137,3 +137,45 @@ document.addEventListener('click', (e) => {
   else { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
          document.execCommand('copy'); ta.remove(); done(); }
 });
+
+// Bank-Aktionen: Popup, „AUSFÜHREN“ muss ausdrücklich eingegeben werden (Formulare mit data-confirm="…")
+(() => {
+  const WORD = 'AUSFÜHREN';
+  let dlg = null;
+  const build = () => {
+    dlg = document.createElement('dialog');
+    dlg.className = 'confirm-dialog';
+    dlg.innerHTML = '<form method="dialog"><h2>⚠️ Bankauftrag bestätigen</h2><p class="confirm-text"></p>' +
+      '<p>Zum Ausführen bitte <b>' + WORD + '</b> eingeben:</p>' +
+      '<input type="text" class="confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false">' +
+      '<div class="confirm-actions"><button value="cancel" class="sec" formnovalidate>Abbrechen</button>' +
+      '<button value="ok" class="danger confirm-ok" disabled>Ausführen</button></div></form>';
+    document.body.appendChild(dlg);
+    const inp = dlg.querySelector('.confirm-input'), ok = dlg.querySelector('.confirm-ok');
+    const norm = (v) => v.trim().toUpperCase().replace('UE', 'Ü');
+    inp.addEventListener('input', () => { ok.disabled = norm(inp.value) !== WORD; });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && ok.disabled) e.preventDefault(); });
+  };
+  document.addEventListener('submit', (e) => {
+    const form = e.target;
+    if (!(form instanceof HTMLFormElement) || !form.dataset.confirm || form.dataset.confirmed === '1') return;
+    const submitter = e.submitter;
+    if (submitter && submitter.hasAttribute('data-no-confirm')) return;
+    e.preventDefault();
+    if (!dlg) build();
+    dlg.querySelector('.confirm-text').textContent = (submitter && submitter.dataset.confirm) || form.dataset.confirm;
+    const inp = dlg.querySelector('.confirm-input');
+    inp.value = ''; dlg.querySelector('.confirm-ok').disabled = true;
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return;
+      let h = form.querySelector('input[name="confirm"]');
+      if (!h) { h = document.createElement('input'); h.type = 'hidden'; h.name = 'confirm'; form.appendChild(h); }
+      h.value = WORD;
+      form.dataset.confirmed = '1';
+      if (submitter) form.requestSubmit(submitter); else form.requestSubmit();
+    };
+    dlg.returnValue = '';
+    dlg.showModal();
+    inp.focus();
+  }, true);
+})();

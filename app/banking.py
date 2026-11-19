@@ -992,6 +992,12 @@ def _back(acc: Optional[BankAccess] = None) -> str:
     return "/admin/bank" + (f"#bank-{acc.id}" if acc else "")
 
 
+def _confirmed(form) -> bool:
+    from .reserves import confirmed
+
+    return confirmed(form)
+
+
 def _safe_back(url: str) -> str:
     return url if url.startswith("/admin") and "//" not in url else ""
 
@@ -1137,6 +1143,8 @@ async def export_submit(request: Request, eid: int, s: Session = Depends(get_ses
     back = _safe_back(str(form.get("back", "")))
     if ex.status == "done":
         return _redirect(back or "/admin/bank#auftraege", "Schon als ausgeführt bestätigt.")
+    if not _confirmed(form):
+        return _redirect(back or "/admin/bank#auftraege", "Nicht eingereicht – zur Bestätigung „AUSFÜHREN“ eingeben.")
     try:
         order = order_for_export(s, ex)
         if form.get("now"):
@@ -1187,6 +1195,8 @@ async def transfer(request: Request, s: Session = Depends(get_session)):
     back = "/admin/bank#uebertrag"
     if acc is None:
         return _redirect(back, "Auftraggeberkonto unbekannt.")
+    if not _confirmed(form):
+        return _redirect(back, "Nicht ausgeführt – zur Bestätigung „AUSFÜHREN“ eingeben.")
     a = find_account(acc, src)
     to = str(form.get("to", ""))
     if to and to != "other":
