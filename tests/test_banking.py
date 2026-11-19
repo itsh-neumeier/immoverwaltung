@@ -47,6 +47,7 @@ class FakeBank:
         self.camt = {GIRO: camt(GIRO, [{"amount": -42.5, "purpose": "REWE SAGT DANKE", "name": "REWE", "other": SPAR}],
                                 None, ("2026-10-30", 1000.0))}
         self.tans = []
+        self.giro_debit = False
 
 
 BANK = FakeBank()
@@ -103,8 +104,10 @@ class FakeClient:
         return [BANK.camt.get(account.iban, b"")] if BANK.camt.get(account.iban) else [], []
 
     def get_balance(self, account):
-        return SimpleNamespace(amount=SimpleNamespace(amount=1234.56 if account.iban == GIRO else 2500.0), status="C",
-                               date=date(2026, 11, 18))
+        from mt940.models import Balance  # wie python-fints: Soll-Saldo mit Status „D“
+        if account.iban == SPAR:
+            return Balance("C", "2500.00", date(2026, 11, 18))
+        return Balance("D" if BANK.giro_debit else "C", "1234.56", date(2026, 11, 18))
 
     def _ok(self):
         return SimpleNamespace(status=ResponseStatus.SUCCESS, responses=[SimpleNamespace(code="0010", text="Auftrag angenommen")])
@@ -227,11 +230,13 @@ def test_connect_sync_with_pushtan_and_dedupe():
             acc = s.get(BankAccess, aid)
             assert banking.find_account(acc, GIRO)["balance"] == 1234.56 and acc.last_sync
             assert s.query(Building).first().bank_reserve_balance == 2500.0
-        # zweiter Abruf: nichts doppelt
-        BANK.init_tan = None
+        # zweiter Abruf: nichts doppelt; Soll-Saldo (z. B. Darlehen, Dispo) bleibt negativ
+        BANK.init_tan, BANK.giro_debit = None, True
         r = c.post(f"/admin/bank/access/{aid}/sync", data={})
         with SessionLocal() as s:
             assert s.query(FinTxn).count() == 1
+            assert banking.find_account(s.get(BankAccess, aid), GIRO)["balance"] == -1234.56
+        assert "-1.234,56 €" in c.get("/admin/bank").text
 
 
 def test_submit_export_with_tan_vop_and_confirm():

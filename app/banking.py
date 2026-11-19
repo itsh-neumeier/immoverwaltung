@@ -652,7 +652,7 @@ def _process_sync(s: Session, acc: BankAccess, job: Job) -> str:
                 data = doc if isinstance(doc, bytes) else str(doc).encode()
                 txns += bankimport.parse_camt(data, bals)
         if step[0] == "balance" and res is not None:
-            amount = float(res.amount.amount) * (1 if str(getattr(res, "status", "C")) != "D" else -1)
+            amount = float(res.amount.amount)  # mt940 liefert das Vorzeichen schon (Soll „D“ = negativ, z. B. Darlehen)
             day = getattr(res, "date", None) or date.today()
             bals.append(bankimport.Balance(iban, day, "CLBD", amount))
             if iban in by_iban:

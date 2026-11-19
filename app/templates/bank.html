@@ -60,7 +60,7 @@ Die Registrierungsnummer der Deutschen Kreditwirtschaft unten unter <a href="#ei
       <td><b>{{ fmt_iban(x.iban) }}</b>{% if x.owner %}<br><span class="muted">{{ x.owner }}</span>{% endif %}</td>
       <td>{{ x.type or '–' }}{% if x.product %}<br><span class="muted">{{ x.product }}</span>{% endif %}</td>
       <td>{% for r in roles.get(x.iban, []) %}<div>{{ r }}</div>{% else %}<span class="muted">–</span>{% endfor %}</td>
-      <td class="r">{% if x.balance is defined %}{{ de(x.balance) }} €<br><span class="muted">{{ x.balance_date[8:10] }}.{{ x.balance_date[5:7] }}.</span>{% else %}–{% endif %}</td>
+      <td class="r">{% if x.balance is defined %}<span {% if x.balance < 0 %}style="color:var(--danger)"{% endif %}>{{ de(x.balance) }} €</span><br><span class="muted">{{ x.balance_date[8:10] }}.{{ x.balance_date[5:7] }}.</span>{% else %}–{% endif %}</td>
       <td class="ops">{% if x.ops %}{% for code, label in ops_names.items() %}<span class="{{ 'ok' if code in x.ops else 'no' }}" title="{{ code }}">{{ label }}</span>{% endfor %}{% else %}<span class="muted">Bank nennt keine Liste</span>{% endif %}</td>
     </tr>
     {% endfor %}
