@@ -68,13 +68,18 @@ verzerrt, Zeitangaben relativ. Die Antwort wird in der App wieder den echten Tö
   <div class="grid">
     <div><label>OpenAI-API-Schlüssel {% if has_key %}(gespeichert {{ key_hint }} – leer = unverändert){% endif %}</label>
       <input type="password" name="openai_key" autocomplete="off" placeholder="sk-…"></div>
-    <div><label>Modell</label><input type="text" name="openai_model" value="{{ model }}" placeholder="gpt-5.6"></div>
+    <div><label>Modell</label><input type="text" name="openai_model" value="{{ model }}" placeholder="gpt-5.6" list="ai-models">
+      {% if models %}<datalist id="ai-models">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist>{% endif %}</div>
   </div>
+  <p class="muted">Kostenloser OpenAI-Zugang: Dort sind nur einzelne, meist kleinere Modelle nutzbar und nur wenige Anfragen pro
+  Minute – für die Kassenprüfung reicht eine Anfrage je Prüfung. „Schlüssel &amp; Modell testen“ probiert das eingetragene Modell mit
+  einer Mini-Anfrage aus und stellt sonst automatisch ein günstiges Modell ein, das mit deinem Zugang funktioniert
+  (die Auswahl im Feld zeigt danach alle Modelle deines Kontos, günstige zuerst).</p>
   <p class="muted">Der Schlüssel wird verschlüsselt gespeichert und nie angezeigt. Anfragen gehen mit <code>store: false</code> an die
   OpenAI-API. Ein eigener Projekt-Schlüssel mit Ausgabenlimit ist empfehlenswert.</p>
   <div class="check"><input type="checkbox" name="audit_monthly" id="am" {% if st.get('audit_monthly') == '1' %}checked{% endif %}><label for="am" style="margin:0">Einmal im Monat automatisch prüfen (ab dem 2., Ergebnis per Push)</label></div>
   {% if has_key %}<div class="check"><input type="checkbox" name="forget_key" id="fk"><label for="fk" style="margin:0">gespeicherten Schlüssel löschen</label></div>{% endif %}
   <button>Speichern</button>
-  <button class="sec" name="test" value="1">Speichern &amp; Schlüssel testen</button>
+  <button class="sec" name="test" value="1">Speichern, Schlüssel &amp; Modell testen</button>
 </form>
 {% endblock %}

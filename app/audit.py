@@ -391,8 +391,7 @@ def call_openai(key: str, model: str, payload: dict) -> dict:
     except ValueError:
         raise AuditError(f"OpenAI: unerwartete Antwort (HTTP {r.status_code})")
     if r.status_code >= 400:
-        msg = (data.get("error") or {}).get("message") if isinstance(data, dict) else ""
-        raise AuditError(f"OpenAI-Fehler (HTTP {r.status_code}): {msg or r.text[:200]}")
+        raise AuditError(explain_error(r.status_code, data, model))
     for item in data.get("output", []):
         for c in item.get("content", []) or []:
             if c.get("type") == "refusal":
@@ -405,10 +404,62 @@ def call_openai(key: str, model: str, payload: dict) -> dict:
     raise AuditError("Antwort des Modells enthält keinen Text.")
 
 
+def explain_error(status: int, data, model: str = "") -> str:
+    """OpenAI-Fehler verständlich (v. a. Grenzen des kostenlosen Zugangs)."""
+    err = (data.get("error") or {}) if isinstance(data, dict) else {}
+    code, msg = str(err.get("code") or err.get("type") or ""), str(err.get("message") or "")[:200]
+    if status == 401:
+        return "OpenAI: API-Schlüssel ungültig oder widerrufen."
+    if code == "insufficient_quota":
+        return ("OpenAI: Kontingent aufgebraucht bzw. kein Guthaben – im kostenlosen Zugang ist das Monatskontingent "
+                "erschöpft oder das Modell kostenpflichtig. Ein günstigeres Modell wählen oder später erneut versuchen.")
+    if status == 429:
+        return ("OpenAI: zu viele Anfragen in kurzer Zeit (der kostenlose Zugang erlaubt nur wenige pro Minute) – "
+                "bitte in einer Minute erneut starten.")
+    if status in (403, 404) or code in ("model_not_found", "unsupported_model"):
+        return (f"OpenAI: Modell „{model}“ ist für deinen Zugang nicht freigegeben (im kostenlosen Zugang sind nur "
+                "einzelne Modelle nutzbar) – unter Einstellungen „Schlüssel & Modell testen“ für einen Vorschlag.")
+    return f"OpenAI-Fehler (HTTP {status}): {msg}"
+
+
+def probe(key: str, model: str) -> tuple[bool, str]:
+    """Mini-Anfrage: funktioniert dieses Modell mit diesem Schlüssel (inkl. strukturierter Antwort)?"""
+    body = {"model": model, "store": False, "max_output_tokens": 64, "input": "Antworte mit ok.",
+            "text": {"format": {"type": "json_schema", "name": "test", "strict": True,
+                                "schema": {"type": "object", "additionalProperties": False, "required": ["ok"],
+                                           "properties": {"ok": {"type": "boolean"}}}}}}
+    try:
+        r = httpx.post(f"{OPENAI_URL}/responses", json=body, timeout=60,
+                       headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    except httpx.HTTPError as e:
+        return False, f"OpenAI nicht erreichbar: {e}"
+    if r.status_code < 400:
+        return True, "ok"
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return False, explain_error(r.status_code, data, model)
+
+
+CHEAP = ("mini", "luna", "terra", "nano")  # günstige Modelle für den kostenlosen Zugang (in dieser Reihenfolge)
+
+
+def suggest(models: list[str]) -> list[str]:
+    """Günstige Kandidaten (mini vor nano), jeweils neueste zuerst; ohne datierte Snapshots/Vorschauen."""
+    plain = [m for m in models if not re.search(r"-\d{4}-\d{2}-\d{2}$|preview", m)]
+    cheap = sorted((m for m in plain if any(c in m for c in CHEAP)), reverse=True)
+    return sorted(cheap, key=lambda m: (next(i for i, c in enumerate(CHEAP) if c in m), not m.startswith("gpt")))
+
+
 def list_models(key: str) -> list[str]:
     r = httpx.get(f"{OPENAI_URL}/models", headers={"Authorization": f"Bearer {key}"}, timeout=30)
     if r.status_code >= 400:
-        raise AuditError(f"Modelle nicht abrufbar (HTTP {r.status_code})")
+        try:
+            data = r.json()
+        except ValueError:
+            data = {}
+        raise AuditError(explain_error(r.status_code, data))
     ids = [m.get("id", "") for m in r.json().get("data", [])]
     return sorted(i for i in ids if re.match(r"^(gpt|o\d)", i) and not re.search(r"audio|realtime|tts|image|transcribe|search", i))
 
@@ -516,7 +567,9 @@ VERDICT = {"in_ordnung": ("✅", "In Ordnung"), "hinweise": ("ℹ️", "Hinweise
 def _ctx(s: Session) -> dict:
     st = get_settings(s)
     key = api_key(s)
+    models = [m for m in (st.get("openai_models") or "").split(",") if m]
     return {"st": st, "has_key": bool(key), "key_hint": ("…" + key[-4:]) if key else "", "model": model_name(s),
+            "models": suggest(models) + [m for m in models if m not in suggest(models)],
             "reports": s.query(AuditReport).order_by(AuditReport.id.desc()).limit(20).all(),
             "verdicts": VERDICT, "areas": AREA_LABEL, "de": _de}
 
@@ -579,8 +632,20 @@ async def audit_settings(request: Request, s: Session = Depends(get_session)):
     if form.get("test") and (k := api_key(s)):
         try:
             models = list_models(k)
-            msg += f" · Schlüssel gültig, {len(models)} Modelle" + ("" if data["openai_model"] in models else
-                                                                    f" – „{data['openai_model']}“ nicht in der Liste, bitte prüfen")
         except (AuditError, httpx.HTTPError) as e:
-            msg += f" · Test fehlgeschlagen: {e}"
-    return _redirect("/admin/pruefung", msg)
+            return _redirect("/admin/pruefung#einstellungen", f"{msg} · Test fehlgeschlagen: {e}")
+        save_settings(s, {"openai_models": ",".join(models)})
+        ok, why = probe(k, data["openai_model"])
+        if ok:
+            msg += f" · Schlüssel gültig, Modell „{data['openai_model']}“ funktioniert ✓"
+        else:
+            msg += f" · {why}"
+            for cand in [m for m in suggest(models) if m != data["openai_model"]][:4]:
+                ok2, _ = probe(k, cand)
+                if ok2:
+                    save_settings(s, {"openai_model": cand})
+                    msg += f" → stattdessen „{cand}“ eingestellt, das funktioniert ✓"
+                    break
+            else:
+                msg += " · Kein günstiges Modell gefunden, das mit diesem Zugang funktioniert."
+    return _redirect("/admin/pruefung#einstellungen", msg)

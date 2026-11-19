@@ -347,6 +347,10 @@ Unter Finanzen → Kassenprüfung (KI) prüft die App Rücklagen, Kontoabgleich,
   Beträge werden mit einem geheimen Faktor verzerrt, Zeitangaben sind relativ. Vor dem Versand prüft die App die
   Anfrage auf echte Namen und IBANs und sendet im Zweifel nicht. Die Antwort wird lokal wieder den echten Töpfen
   und Euro-Beträgen zugeordnet.
+- **Kostenloser OpenAI-Zugang:** „Schlüssel & Modell testen“ probiert das eingetragene Modell mit einer Mini-Anfrage
+  aus. Ist es für den Zugang nicht freigegeben oder ist das Kontingent erschöpft, stellt die App automatisch ein
+  günstiges Modell ein, das funktioniert (mini vor nano). Fehler wie „Kontingent aufgebraucht“ oder „zu viele
+  Anfragen“ werden verständlich angezeigt. Eine Prüfung ist genau eine Anfrage.
 - **Vorschau „Was geht raus?“** zeigt die genaue Anfrage. Berichte werden gespeichert, Befunde lassen sich abhaken.
   Optional prüft die App einmal im Monat automatisch, mit Push-Nachricht.
 

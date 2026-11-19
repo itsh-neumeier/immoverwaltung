@@ -614,6 +614,7 @@ SETTING_DEFAULTS = {
     "fints_product_id": "",
     "openai_key": "",  # verschlüsselt (secretbox)
     "openai_model": "",
+    "openai_models": "",  # Modelle des Zugangs (beim Schlüsseltest abgerufen)
     "audit_monthly": "",  # Kassenprüfung einmal im Monat automatisch  # FinTS-Produktregistrierung (Deutsche Kreditwirtschaft) – nicht ins Repo!
     "totp_admins": "1",  # Verwalter müssen die Zwei-Faktor-Anmeldung einrichten  # Hauptkonto für die Finanzplanung (leer = Hauptkonto des ersten Gebäudes)
     "fin_period": "monat",  # monat (Kalendermonat) | gehalt (vom letzten Gehaltseingang bis zum nächsten)

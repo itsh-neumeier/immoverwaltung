@@ -130,3 +130,32 @@ def test_pseudo_roundtrip():
     assert p.resolve(f"Bitte {t} prüfen") == "Bitte Immobilie · Grundsteuer prüfen"
     assert p.rel(date(2026, 11, 9)) == -10
     assert audit.classify("Fahrzeug · HU-AU FUER BA-AT9314")["art"] == ["Fahrzeug: Prüfung/Wartung"]
+
+
+def test_free_tier_model_test_picks_working_cheap_model(monkeypatch):
+    models = ["gpt-5.6", "gpt-5.6-mini", "gpt-5.6-nano", "gpt-4.1-mini", "whisper-1"]
+    tried = []
+
+    def fake_get(url, headers=None, timeout=None):
+        return httpx.Response(200, json={"data": [{"id": m} for m in models]}, request=httpx.Request("GET", url))
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        tried.append(json["model"])
+        if json["model"] == "gpt-5.6":
+            return httpx.Response(403, json={"error": {"code": "model_not_found", "message": "no access"}},
+                                  request=httpx.Request("POST", url))
+        if json["model"] == "gpt-5.6-mini":
+            return httpx.Response(429, json={"error": {"code": "insufficient_quota", "message": "quota"}},
+                                  request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"output": []}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(audit.httpx, "get", fake_get)
+    monkeypatch.setattr(audit.httpx, "post", fake_post)
+    with TestClient(app) as c:
+        r = c.post("/admin/pruefung/settings", data={"openai_key": "sk-free-123456", "openai_model": "gpt-5.6",
+                                                     "test": "1"})
+        assert "für deinen Zugang nicht freigegeben" in r.text and "„gpt-4.1-mini“ eingestellt" in r.text
+        assert tried == ["gpt-5.6", "gpt-5.6-mini", "gpt-4.1-mini"]
+        assert 'value="gpt-4.1-mini"' in r.text and '<option value="gpt-5.6-nano">' in r.text
+    assert "Kontingent aufgebraucht" in audit.explain_error(429, {"error": {"code": "insufficient_quota"}})
+    assert "zu viele Anfragen" in audit.explain_error(429, {"error": {"code": "rate_limit_exceeded"}})
